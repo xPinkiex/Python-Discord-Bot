@@ -158,16 +158,14 @@ def react(emojis: str) -> str:
         bong_tools.pending_reactions.append(emoji)
     return f"Reacted with {emojis}"
 
-
 @tool
-
 def current_time() -> str:
     """Get the current system time. Use this when the user asks what time it is or needs to know the current time.
     """
     return datetime.now().strftime("%H:%M")
+
 # --- Search tools ---
 @tool
-
 def web_search(query: str) -> str:
     """Search the web for information. Use this when you need to look up facts, news, or any information you don't know.
     Args:
@@ -181,6 +179,7 @@ def web_search(query: str) -> str:
         return f"{results[0]['title']}: {results[0]['body']}"
     except Exception as e:
         return f"Search error: {e}"
+        
 @tool
 def youtube_search(query: str) -> str:
     """Search YouTube for videos. Use this when the user wants to find a YouTube video or when you need to find a YouTube URL to download audio from.
@@ -282,14 +281,32 @@ def list_music() -> str:
         return "No music files found in the saved_sounds folder."
     return f"{len(files)} songs available. The full library is in your context."
 
+@tool
+def search_music(query: str) -> str:
+    """Search the music library by name. Use this when the user wants to play a song and you need to find its exact index. Always use this before play_audio if the user mentions a song by name instead of an index number.
+    Args:
+        query: Part of the song name to search for (e.g. "paradise", "mayday", "jersey").
+    """
+    bong_tools.refresh_music_library()
+    files = bong_tools.music_library
+    if not files:
+        return "No music files available. Download some first."
+    q = query.lower()
+    matches = [(i, f) for i, f in enumerate(files) if q in f.stem.lower()]
+    if not matches:
+        return f"No songs matching '{query}' found. Use list_music to see all available tracks."
+    lines = [f"  {i}: {f.stem}" for i, f in matches]
+    return f"Found {len(matches)} match(es) for '{query}':\n" + "\n".join(lines)
+
 # --- Audio playback tools ---
 # These set pending flags that the cog reads and acts on asynchronously
 
 @tool
-def play_audio(index: int) -> str:
-    """Play a downloaded mp3 file in the voice channel you are currently in. Only works if the user is in a voice channel — if they are not, tell them to join one and do not call this tool. Use the index number from list_music to select the track.
+def play_audio(index: int = -1, name: str = "") -> str:
+    """Play a downloaded mp3 file in the voice channel the user is currently in. Only works if the user is in a voice channel. You can provide either an index number from list_music, or a song name to fuzzy-match against the library. Always use search_music first if the user gives a song name.
     Args:
-        index: The index number of the track from list_music (e.g. 0, 1, 2).
+        index: The index number of the track from list_music (e.g. 0, 1, 2). Use -1 if providing a name instead.
+        name: A song name to fuzzy-match against the library. Only used if index is -1 or not provided.
     """
     if not bong_tools.caller_in_voice:
         return "The user needs to be in a voice channel to use music commands. This might be someone trolling from outside the voice channel."
@@ -298,8 +315,23 @@ def play_audio(index: int) -> str:
         return "No music files available. Download some first."
     if not bong_tools.voice_connected and not bong_tools.pending_join_voice:
         return "Not in a voice channel. Join a voice channel first using join_voice before playing music."
+    if name:
+        bong_tools.refresh_music_library()
+        files = bong_tools.music_library
+        name_lower = name.lower()
+        exact = [(i, f) for i, f in enumerate(files) if f.stem.lower() == name_lower]
+        if exact:
+            i, f = exact[0]
+            bong_tools.pending_play_audio = str(f)
+            return f"Queued '{f.stem}' for playback."
+        partial = [(i, f) for i, f in enumerate(files) if name_lower in f.stem.lower() or f.stem.lower() in name_lower]
+        if partial:
+            i, f = partial[0]
+            bong_tools.pending_play_audio = str(f)
+            return f"Queued '{f.stem}' for playback."
+        return f"No song matching '{name}' found. Use search_music to find the right track."
     if index < 0 or index >= len(files):
-        return f"Index {index} out of range. Use list_music to see available tracks (0-{len(files)-1})."
+        return f"Index {index} out of range. Use list_music or search_music to find the right track (0-{len(files)-1})."
     bong_tools.pending_play_audio = str(files[index])
     return f"Queued '{files[index].stem}' for playback."
 
@@ -529,7 +561,7 @@ def shutdown() -> str:
     return "Shutting down"
 
 # All tools the model can call
-tools = [react, describe_image, read_text_file, join_voice, leave_voice, current_time, web_search, youtube_search, download_music, list_music, play_audio, loop_audio, pause_audio, resume_audio, stop_audio, skip_audio, music_shuffle_enabled, list_images, send_image, list_texts, send_text, save_memory, recall_memories_by_userid, recall_memories_general, shutdown]
+tools = [react, describe_image, read_text_file, join_voice, leave_voice, current_time, web_search, youtube_search, download_music, list_music, search_music, play_audio, loop_audio, pause_audio, resume_audio, stop_audio, skip_audio, music_shuffle_enabled, list_images, send_image, list_texts, send_text, save_memory, recall_memories_by_userid, recall_memories_general, shutdown]
 
 # Lookup dict from tool name to tool function for dispatching tool calls
 tool_map = {t.name: t for t in tools}
