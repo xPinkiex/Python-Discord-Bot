@@ -356,6 +356,8 @@ def _make_after_play_callback(guild):
                 return
         except Exception:
             return
+        if bong_tools.pending_play_audio or bong_tools.pending_skip or bong_tools.pending_stop:
+            return
         try:
             if bong_tools.loop_enabled and bong_tools.current_track:
                 vc.play(discord.FFmpegPCMAudio(bong_tools.current_track, options="-filter:a volume=0.3"), after=after_play)
@@ -681,6 +683,7 @@ class BongCog(commands.Cog):
             debug.log_to_file("AI", f"QUERY from {message.author.display_name} ({message.author.id}): {message.content}")
 
             await update_voice_state(guild, message.author.id)
+            bong_tools.authorized = message.author.id in ALLOWED_USERS
             bong_tools.current_user_id = message.author.id
 
             bound_model = base_model.bind_tools(bong_tools.tools)

@@ -118,6 +118,7 @@ voice_connected = False    # Set by the cog before the tool loop; True if bot is
 caller_in_voice = False    # Set by the cog before the tool loop; True if the user issuing commands is in a voice channel
 current_user_id = None     # Set by the cog before the tool loop; Discord user ID of the current user
 
+authorized = False
 shuffle_enabled = False
 loop_enabled = False
 loop_track = None
@@ -526,8 +527,10 @@ def recall_memories_general(query: str) -> str:
 
 @tool
 def shutdown() -> str:
-    """Shut down the bot. Only use this when an authorized user explicitly asks you to shut down.
+    """Shut down the bot. Only use this when an authorized user explicitly asks you to shut down. If the user is not authorized (not in the allowed users list), do NOT call this tool — instead tell them they don't have permission.
     """
+    if not bong_tools.authorized:
+        return "Cannot shut down: the user is not authorized to do this. Tell them they don't have permission to shut down the bot."
     bong_tools.pending_shutdown = True
     return "Shutting down"
 
