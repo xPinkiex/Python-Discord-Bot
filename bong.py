@@ -143,7 +143,7 @@ def build_system_prompt(message, history, voice_status, attachment_desc, image_a
     """Fill in the prompt template with all context variables and return the system message string."""
     history_str = "\n".join(history)
     user_msg = message.content.replace("\n", ". ")
-    memories_str = bong_tools.retrieve_memories(f"{message.author.display_name}: {user_msg}", username=message.author.display_name)
+    memories_str = bong_tools.retrieve_memories(f"{message.author.display_name}: {user_msg}", username=message.author.display_name, user_id=message.author.id)
 
     replied_content = replied_to.content.replace("\n", ". ") if replied else ""
     reply_block = ""
@@ -366,6 +366,8 @@ def _make_after_play_callback(guild):
                     next_track = random.choice(files)
                     bong_tools.current_track = str(next_track)
                     vc.play(discord.FFmpegPCMAudio(bong_tools.current_track, options="-filter:a volume=0.3"), after=after_play)
+                    return
+            bong_tools.current_track = None
         except Exception as e:
             debug.log("Audio", f"Auto-continue error: {e}")
     return after_play
@@ -427,9 +429,10 @@ async def _dispatch_play_audio(guild):
         track_path = bong_tools.pending_play_audio
         bong_tools.current_track = track_path
         after_play = _make_after_play_callback(guild)
-        source = discord.FFmpegPCMAudio(track_path, options="-filter:a volume=0.3")
-        if vc.is_playing():
+        if vc.is_playing() or vc.is_paused():
             vc.stop()
+            await asyncio.sleep(0.5)
+        source = discord.FFmpegPCMAudio(track_path, options="-filter:a volume=0.3")
         vc.play(source, after=after_play)
     except Exception as e:
         debug.log("AI", f"Failed to play audio: {e}")
@@ -440,25 +443,19 @@ async def _dispatch_play_audio(guild):
 
 
 async def _dispatch_loop_audio(guild):
-    """Handle loop track start. Returns error string or None."""
+    """Handle loop track start by stopping current playback and queuing the loop track."""
     if not (bong_tools.loop_enabled and bong_tools.loop_track):
         return None
     vc = guild.voice_client if guild else None
-    error = None
-    if vc and vc.is_connected():
-        try:
-            if vc.is_playing() or vc.is_paused():
-                vc.stop()
-            track_path = bong_tools.loop_track
-            bong_tools.current_track = track_path
-            after_play = _make_after_play_callback(guild)
-            source = discord.FFmpegPCMAudio(track_path, options="-filter:a volume=0.3")
-            vc.play(source, after=after_play)
-        except Exception as e:
-            debug.log("AI", f"Failed to start loop: {e}")
-            error = f"Failed to start loop: {e}"
+    if not vc or not vc.is_connected():
+        bong_tools.loop_track = None
+        return None
+    if vc.is_playing() or vc.is_paused():
+        vc.stop()
+    bong_tools.current_track = bong_tools.loop_track
+    bong_tools.pending_play_audio = bong_tools.loop_track
     bong_tools.loop_track = None
-    return error
+    return None
 
 
 async def _dispatch_pause_audio(guild):
@@ -493,7 +490,9 @@ async def _dispatch_stop_audio(guild):
     """Handle pending_stop flag. Returns error string or None."""
     if not bong_tools.pending_stop:
         return None
+    bong_tools.loop_enabled = False
     bong_tools.loop_track = None
+    bong_tools.current_track = None
     vc = guild.voice_client if guild else None
     error = None
     if vc and (vc.is_playing() or vc.is_paused()):
@@ -505,42 +504,44 @@ async def _dispatch_stop_audio(guild):
 
 
 async def _dispatch_skip_audio(guild):
-    """Handle pending_skip flag. Returns error string or None."""
+    """Handle pending_skip flag by stopping current playback and queuing the next track."""
     if not bong_tools.pending_skip:
         return None
     vc = guild.voice_client if guild else None
-    error = None
-    if vc and (vc.is_playing() or vc.is_paused()):
-        next_file = bong_tools.pending_skip_target
-        if next_file:
-            bong_tools.current_track = str(next_file)
-            after_play = _make_after_play_callback(guild)
-            vc.stop()
-            vc.play(discord.FFmpegPCMAudio(str(next_file), options="-filter:a volume=0.3"), after=after_play)
-        else:
-            error = "No music files to skip to."
-    else:
-        error = "Nothing is playing to skip."
+    if not vc or not (vc.is_playing() or vc.is_paused()):
+        bong_tools.pending_skip = False
+        bong_tools.pending_skip_target = None
+        bong_tools.pending_skip_info = ""
+        return "Nothing is playing to skip."
+    if not bong_tools.pending_skip_target:
+        bong_tools.pending_skip = False
+        bong_tools.pending_skip_info = ""
+        return "No music files to skip to."
+    bong_tools.current_track = str(bong_tools.pending_skip_target)
+    bong_tools.pending_play_audio = str(bong_tools.pending_skip_target)
+    vc.stop()
     bong_tools.pending_skip = False
     bong_tools.pending_skip_target = None
     bong_tools.pending_skip_info = ""
-    return error
+    return None
 
 
 async def dispatch_voice_actions(guild, message):
     """Dispatch all pending voice/audio/file-send actions. Returns first error or None."""
     try:
-        voice_actions = [
-            _dispatch_join_voice(guild),
-            _dispatch_leave_voice(guild),
-            _dispatch_play_audio(guild),
-            _dispatch_loop_audio(guild),
-            _dispatch_pause_audio(guild),
-            _dispatch_resume_audio(guild),
-            _dispatch_stop_audio(guild),
-            _dispatch_skip_audio(guild),
+        voice_dispatchers = [
+            _dispatch_join_voice,
+            _dispatch_leave_voice,
+            _dispatch_stop_audio,
+            _dispatch_skip_audio,
+            _dispatch_loop_audio,
+            _dispatch_play_audio,
+            _dispatch_pause_audio,
+            _dispatch_resume_audio,
         ]
-        results = await asyncio.gather(*voice_actions)
+        results = []
+        for fn in voice_dispatchers:
+            results.append(await fn(guild))
 
         if bong_tools.pending_send_image:
             img_path = Path(bong_tools.pending_send_image)
@@ -644,8 +645,11 @@ class BongCog(commands.Cog):
             return
         if message.channel.id not in active_channels:
             return
-        if message.content.startswith("@"):
-            return
+        if message.content.startswith(self.bot.command_prefix):
+            after_prefix = message.content[len(self.bot.command_prefix):].strip()
+            command_name = after_prefix.split()[0] if after_prefix else ""
+            if command_name in self.bot.all_commands:
+                return
 
         attachment_desc, image_attachments, text_attachments = await process_attachments(message)
         history = chat_memories.setdefault(message.channel.id, [])
@@ -677,6 +681,7 @@ class BongCog(commands.Cog):
             debug.log_to_file("AI", f"QUERY from {message.author.display_name} ({message.author.id}): {message.content}")
 
             await update_voice_state(guild, message.author.id)
+            bong_tools.current_user_id = message.author.id
 
             bound_model = base_model.bind_tools(bong_tools.tools)
             result, tool_summaries = await run_tool_loop(bound_model, messages, image_attachments, text_attachments, last_prompt_path)

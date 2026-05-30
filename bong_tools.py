@@ -3,7 +3,7 @@
 import os
 import random
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from ddgs import DDGS
@@ -28,7 +28,7 @@ TEXT_DIR.mkdir(exist_ok=True)
 
 # --- Vector DB for long-term memory ---
 DB_DIR = Path(__file__).parent / "chroma_db"
-_embeddings = OllamaEmbeddings(model="nomic-embed-text")
+_embeddings = OllamaEmbeddings(model="nomic-embed-text", keep_alive=-1)
 _vector_db = Chroma(
     collection_name="bong_memories",
     embedding_function=_embeddings,
@@ -37,6 +37,8 @@ _vector_db = Chroma(
 
 _BOILERPLATE = re.compile(r"\bbong\b['']?s?\b", re.IGNORECASE)
 _USERID_TAG = re.compile(r"\s*\(userID:?\s*\d+\)", re.IGNORECASE)
+# Percentage boost applied to user-specific memory scores (0.1 = 10% boost)
+USER_MEMORY_SCORE_BOOST = 0.25
 
 def _clean_for_embedding(text: str) -> str:
     """Remove bot boilerplate from text before embedding/search to reduce noise."""
@@ -44,8 +46,9 @@ def _clean_for_embedding(text: str) -> str:
     text = _USERID_TAG.sub("", text)
     return text.strip()
 
-def retrieve_memories(query: str, username: str = "", k: int = 10) -> str:
+def retrieve_memories(query: str, username: str = "", user_id: int = None, k: int = 10) -> str:
     """Retrieve the k most relevant long-term memories for a given query.
+    If user_id is provided, runs a filtered search for that user's memories first.
     If username is provided, runs a second search using the username and merges results.
     """
     try:
@@ -55,9 +58,23 @@ def retrieve_memories(query: str, username: str = "", k: int = 10) -> str:
         cleaned_query = bong_tools._clean_for_embedding(query)
         cleaned_name = bong_tools._clean_for_embedding(username) if username else ""
 
-        for search_docs in [bong_tools._vector_db.similarity_search_with_relevance_scores(cleaned_query, k=k)] + (
-            [bong_tools._vector_db.similarity_search_with_relevance_scores(cleaned_name, k=k)] if cleaned_name else []
-        ):
+        searches = []
+        is_user_search = []
+
+        if user_id:
+            searches.append(bong_tools._vector_db.similarity_search_with_relevance_scores(
+                cleaned_query, k=k, filter={"user_id": user_id}
+            ))
+            is_user_search.append(True)
+
+        searches.append(bong_tools._vector_db.similarity_search_with_relevance_scores(cleaned_query, k=k))
+        is_user_search.append(False)
+
+        if cleaned_name:
+            searches.append(bong_tools._vector_db.similarity_search_with_relevance_scores(cleaned_name, k=k))
+            is_user_search.append(False)
+
+        for search_docs, from_user_search in zip(searches, is_user_search):
             for doc, score in search_docs:
                 if score < 0.5:
                     continue
@@ -67,7 +84,8 @@ def retrieve_memories(query: str, username: str = "", k: int = 10) -> str:
                 if dedup_key in seen_ids:
                     continue
                 seen_ids.add(dedup_key)
-                all_results.append((doc.page_content, score))
+                adjusted_score = score * (1.0 + bong_tools.USER_MEMORY_SCORE_BOOST) if from_user_search else score
+                all_results.append((doc.page_content, adjusted_score))
 
         if not all_results:
             debug.log("Memory", "No relevant memories found")
@@ -77,25 +95,7 @@ def retrieve_memories(query: str, username: str = "", k: int = 10) -> str:
     except Exception as e:
         debug.log("Memory", f"Retrieval error: {e}")
         return ""
-        debug.log("Memory", f"Retrieved {len(relevant)} memories for query")
-        return "\n".join(f"- {m}" for m, _ in relevant)
-    except Exception as e:
-        debug.log("Memory", f"Retrieval error: {e}")
-        return ""
 
-def _expire_old_memories(days: int = 36500):
-    """Delete memories older than the given number of days."""
-    try:
-        cutoff = (datetime.now() - timedelta(days=days)).timestamp()
-        collection = bong_tools._vector_db._collection
-        result = collection.get(where={"saved_at": {"$lt": cutoff}})
-        if result["ids"]:
-            collection.delete(ids=result["ids"])
-            debug.log("Memory", f"Expired {len(result['ids'])} old memories")
-    except Exception as e:
-        debug.log("Memory", f"Expiry cleanup failed: {e}")
-
-_expire_old_memories()
 
 # Shared state — tools write to these during the sync tool loop,
 # and the cog reads/acts on them afterwards since Discord calls are async
@@ -116,6 +116,7 @@ pending_send_text = None     # File path to send as a text file, set by send_tex
 
 voice_connected = False    # Set by the cog before the tool loop; True if bot is in a voice channel
 caller_in_voice = False    # Set by the cog before the tool loop; True if the user issuing commands is in a voice channel
+current_user_id = None     # Set by the cog before the tool loop; Discord user ID of the current user
 
 shuffle_enabled = False
 loop_enabled = False
@@ -491,15 +492,37 @@ def save_memory(fact: str) -> str:
         fact: A concise fact or piece of information to remember (e.g. "Eve loves dubstep and skrillex", "Radon is an orange fox who likes cars").
     """
     try:
-        similar = bong_tools._vector_db.similarity_search_with_relevance_scores(fact, k=3)
+        similar = bong_tools._vector_db.similarity_search_with_relevance_scores(fact, k=3, filter={"user_id": bong_tools.current_user_id})
         for doc, score in similar:
             if score >= 0.7:
                 return f"Already remembered something similar: {doc.page_content}"
         clean_fact = bong_tools._clean_for_embedding(fact)
-        bong_tools._vector_db.add_texts([clean_fact], metadatas=[{"saved_at": datetime.now().timestamp()}])
+        bong_tools._vector_db.add_texts([clean_fact], metadatas=[{"user_id": bong_tools.current_user_id}])
         return f"Remembered: {clean_fact}"
     except Exception as e:
         return f"Failed to save memory: {e}"
+
+@tool
+def recall_memories_by_userid(query: str) -> str:
+    """Search the current user's long-term memories. Use this when you need to recall something you've previously saved about the user you're talking to.
+    Args:
+        query: What to search for (e.g. "music preferences", "inside jokes about cars").
+    """
+    results = bong_tools.retrieve_memories(query, user_id=bong_tools.current_user_id)
+    if not results:
+        return "No relevant memories found for this user."
+    return results
+
+@tool
+def recall_memories_general(query: str) -> str:
+    """Search all long-term memories regardless of user. Use this when you need to recall something about someone other than the current user, or a general fact not tied to a specific person.
+    Args:
+        query: What to search for (e.g. "Radon's fursona", "inside jokes", "who likes dubstep").
+    """
+    results = bong_tools.retrieve_memories(query)
+    if not results:
+        return "No relevant memories found."
+    return results
 
 @tool
 def shutdown() -> str:
@@ -509,7 +532,7 @@ def shutdown() -> str:
     return "Shutting down"
 
 # All tools the model can call
-tools = [react, describe_image, read_text_file, join_voice, leave_voice, clear_console, current_time, web_search, youtube_search, download_music, list_music, play_audio, loop_audio, pause_audio, resume_audio, stop_audio, skip_audio, music_shuffle_enabled, list_images, send_image, list_texts, send_text, save_memory, shutdown]
+tools = [react, describe_image, read_text_file, join_voice, leave_voice, clear_console, current_time, web_search, youtube_search, download_music, list_music, play_audio, loop_audio, pause_audio, resume_audio, stop_audio, skip_audio, music_shuffle_enabled, list_images, send_image, list_texts, send_text, save_memory, recall_memories_by_userid, recall_memories_general, shutdown]
 
 # Lookup dict from tool name to tool function for dispatching tool calls
 tool_map = {t.name: t for t in tools}
