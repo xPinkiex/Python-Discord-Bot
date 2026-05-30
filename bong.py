@@ -101,7 +101,7 @@ async def is_talking_to_bong(message_content: str, recent_messages: list, reply_
         # Run the classifier in a thread to avoid blocking the async event loop
         response = await asyncio.to_thread(classifier_model.invoke, [HumanMessage(content=prompt)])
         response_text = _extract_response_text(response).upper()
-        return "YES" in response_text or response_text == ""
+        return "YES" in response_text
     except Exception:
         return False
 
