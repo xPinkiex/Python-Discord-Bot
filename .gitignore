@@ -16,6 +16,7 @@ logs/
 backup/
 approved_dm_users.json
 users.json
+reminders.json
 
 # ChromaDB
 chroma_db/

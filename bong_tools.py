@@ -31,6 +31,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 # reliably even after hot reloads (importlib.reload replaces the module object)
 import bong_tools
 import debug
+import reminders
 
 # --- Directory paths for saved media ---
 # Path(__file__).parent resolves to the bot's root directory regardless of cwd
@@ -855,6 +856,41 @@ def forget_memory(query: str) -> str:
         return f"Failed to forget memory: {e}"
 
 @tool
+def set_reminder(message: str, time_delta: str) -> str:
+    """Set a reminder for the current user. Bong will DM them when the time is up.
+    Args:
+        message: What to remind the user about (e.g. "feed the cat", "take out the trash").
+        time_delta: When to remind, as a human-readable duration (e.g. "2 hours", "30 minutes", "1 day", "1 hour 30 minutes").
+    """
+    seconds = reminders.parse_time_delta(time_delta)
+    if seconds is None:
+        return f"Could not understand the time '{time_delta}'. Use formats like '30 minutes', '2 hours', '1 day'."
+    due_at = datetime.now().timestamp() + seconds
+    reminder = reminders.add_reminder(
+        user_id=bong_tools.current_user_id,
+        username=bong_tools.current_username or "",
+        message=message,
+        due_at=due_at,
+    )
+    when = reminders._format_delta(seconds)
+    return f"Reminder set: '{message}' in {when}."
+
+
+@tool
+def cancel_reminder(query: str = "") -> str:
+    """Cancel a pending reminder. If a query is given, cancels the most recent matching reminder. If no query, cancels the most recent reminder.
+    Args:
+        query: Part of the reminder message to match (e.g. "cat"). Leave empty to cancel the most recent one.
+    """
+    return reminders.cancel_reminder(bong_tools.current_user_id, query)
+
+
+@tool
+def list_reminders_tool() -> str:
+    """List all pending reminders for the current user. Use this when the user asks what reminders they have set."""
+    return reminders.list_reminders(bong_tools.current_user_id)
+
+@tool
 def shutdown() -> str:
     """Shut down the bot. Only use this when an authorized user explicitly asks you to shut down. If the user is not authorized (not in the allowed users list), do NOT call this tool — instead tell them they don't have permission.
     """
@@ -864,7 +900,7 @@ def shutdown() -> str:
     return "Shutting down"
 
 # All tools the model can call — this list is bound to the LLM so it knows what's available
-tools = [react, describe_image, read_text_file, join_voice, leave_voice, current_time, web_search, youtube_search, download_music, list_music, search_music, play_audio, loop_audio, pause_audio, resume_audio, stop_audio, skip_audio, music_shuffle_enabled, list_images, send_image, list_texts, send_text, save_memory, recall_memories_by_userid, recall_memories_general, forget_memory, shutdown]
+tools = [react, describe_image, read_text_file, join_voice, leave_voice, current_time, web_search, youtube_search, download_music, list_music, search_music, play_audio, loop_audio, pause_audio, resume_audio, stop_audio, skip_audio, music_shuffle_enabled, list_images, send_image, list_texts, send_text, save_memory, recall_memories_by_userid, recall_memories_general, forget_memory, set_reminder, cancel_reminder, list_reminders_tool, shutdown]
 
 # Lookup dict from tool name to tool function — used by dispatch_tool in bong.py
 tool_map = {t.name: t for t in tools}

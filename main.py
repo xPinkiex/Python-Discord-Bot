@@ -35,8 +35,10 @@ async def on_ready():
     await bot.load_extension('bong')
     import bong_tools
     import dm_approval
+    import reminders
     bong_tools._expire_old_memories()
     dm_approval.load_users()
+    reminders.load_reminders()
     debug.log("Bot", f'Bot logged in as {bot.user}')
 
 @bot.command(name='reload')
@@ -56,7 +58,7 @@ async def reload_ext(ctx, util: str = "bong"):
         # Snapshot and restore mutable state across all related modules
         # so runtime state (shuffle, current track, pending flags, etc.) survives the reload
         snapshots = {}
-        for mod in [util, util + "_tools", "debug", "dm_approval"]:
+        for mod in [util, util + "_tools", "debug", "dm_approval", "reminders"]:
             if mod in sys.modules:
                 # Save all non-function, non-module, non-class attributes (i.e. runtime state)
                 snapshots[mod] = {k: getattr(sys.modules[mod], k) for k in dir(sys.modules[mod])

@@ -26,6 +26,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 import bong_tools
 import debug
 import dm_approval
+import reminders
 
 # --- LLM Models ---
 # The classifier model is fast and cheap — it only needs to output YES/NO
@@ -748,6 +749,8 @@ class BongCog(commands.Cog):
         self.bot = bot
         # Preload channel history on startup so Bong has context immediately
         self.bot.loop.create_task(self._preload_channel())
+        # Start the reminder checker background task
+        self.reminder_task = self.bot.loop.create_task(self._check_reminders())
     
     async def _preload_channel(self):
         """Load recent message history from debug channels on startup so Bong has context."""
@@ -769,6 +772,32 @@ class BongCog(commands.Cog):
                 history.append(f"{msg.author.display_name} at {msg.created_at.strftime('%H:%M')}: {msg.content}")
             channel_name = channel.name if hasattr(channel, "name") else f"DM with {channel.recipient}"
             debug.log("AI", f"Preloaded {len(history)} messages from channel #{channel_name}")
+
+    async def _check_reminders(self):
+        """Background task that checks for due reminders every 30 seconds and DMs the user."""
+        await self.bot.wait_until_ready()
+        reminders.load_reminders()
+        while not self.bot.is_closed():
+            try:
+                now = datetime.now().timestamp()
+                due = [r for r in reminders.reminders if r["due_at"] <= now]
+                for r in due:
+                    reminders.reminders.remove(r)
+                    user = self.bot.get_user(r["user_id"])
+                    if not user:
+                        try:
+                            user = await self.bot.fetch_user(r["user_id"])
+                        except Exception:
+                            continue
+                    try:
+                        await user.send(f"⏰ **Reminder**: {r['message']}")
+                    except discord.Forbidden:
+                        pass
+                if due:
+                    reminders.save_reminders()
+            except Exception as e:
+                debug.log("Reminders", f"Error checking reminders: {e}")
+            await asyncio.sleep(30)
 
     @commands.Cog.listener()
     async def on_message(self, message):
