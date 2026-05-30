@@ -1,31 +1,47 @@
 # bong_tools.py — LangChain tool definitions and shared state for Bong
+#
+# This file defines all the tools the LLM can call (react, web_search, play_audio,
+# save_memory, etc.) and the shared state variables that the cog (bong.py) reads
+# after the tool loop finishes. Since LangChain's @tool decorator creates sync
+# functions and Discord's API is async, tools write to pending_* flags here and
+# the cog dispatches the actual Discord calls afterwards.
+#
+# The file also manages the ChromaDB vector store for long-term memory, the music/
+# image/text file libraries, and the bot's Discord user ID.
 
 import random
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
+# DuckDuckGo search client
 from ddgs import DDGS
+# LangChain's @tool decorator — wraps a function so the LLM can call it by name
 from langchain_core.tools import tool
+# YouTube downloader — used to fetch mp3 audio from URLs
 from yt_dlp import YoutubeDL
 
+# ChromaDB vector store for persistent long-term memory
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings
 
-import bong_tools  # Self-reference so tools can access module-level vars reliably
+# Self-reference import — tools use bong_tools.X to read/write module-level state
+# reliably even after hot reloads (importlib.reload replaces the module object)
+import bong_tools
 import debug
 
-# Directory where downloaded mp3 files are stored
+# --- Directory paths for saved media ---
+# Path(__file__).parent resolves to the bot's root directory regardless of cwd
 DOWNLOAD_DIR = Path(__file__).parent / "saved_sounds"
-DOWNLOAD_DIR.mkdir(exist_ok=True)
-# Directory where saved images are stored
+DOWNLOAD_DIR.mkdir(exist_ok=True)  # Create the folder if it doesn't exist yet
 IMAGE_DIR = Path(__file__).parent / "saved_images"
 IMAGE_DIR.mkdir(exist_ok=True)
-# Directory where saved text files are stored
 TEXT_DIR = Path(__file__).parent / "saved_texts"
 TEXT_DIR.mkdir(exist_ok=True)
 
 # --- Vector DB for long-term memory ---
+# ChromaDB stores text embeddings locally in chroma_db/. When save_memory is called,
+# the fact is embedded with nomic-embed-text and stored for later semantic search.
 DB_DIR = Path(__file__).parent / "chroma_db"
 _embeddings = OllamaEmbeddings(model="nomic-embed-text", keep_alive=-1)
 _vector_db = Chroma(
@@ -34,10 +50,13 @@ _vector_db = Chroma(
     persist_directory=str(DB_DIR),
 )
 
+# Regex patterns used to clean text before embedding — strips "Bong"/"Bong's"
+# and "(userID: 123456)" tags so the embedding focuses on the actual content
 _BOILERPLATE = re.compile(r"\bbong\b['']?s?\b", re.IGNORECASE)
 _USERID_TAG = re.compile(r"\s*\(userID:?\s*\d+\)", re.IGNORECASE)
-# Percentage boost applied to user-specific memory scores (0.1 = 10% boost)
+# Score boost applied to user-specific memory matches vs general matches (0.25 = 25%)
 USER_MEMORY_SCORE_BOOST = 0.25
+
 
 def _clean_for_embedding(text: str) -> str:
     """Remove bot boilerplate from text before embedding/search to reduce noise."""
@@ -45,10 +64,16 @@ def _clean_for_embedding(text: str) -> str:
     text = _USERID_TAG.sub("", text)
     return text.strip()
 
+
 def retrieve_memories(query: str, username: str = "", user_id: int = None, k: int = 10) -> str:
     """Retrieve the k most relevant long-term memories for a given query.
-    If user_id is provided, runs a filtered search for that user's memories first.
-    If username is provided, runs a second search using the username and merges results.
+    
+    Searches work in three layers, merged and deduplicated:
+      1. If user_id is given — search only that user's saved memories (score boosted)
+      2. General search across all memories
+      3. If username is given — search by username as a secondary query
+    
+    Returns a newline-separated list of memories sorted by relevance, or "" if none found.
     """
     try:
         seen_ids = set()
@@ -57,25 +82,30 @@ def retrieve_memories(query: str, username: str = "", user_id: int = None, k: in
         cleaned_query = bong_tools._clean_for_embedding(query)
         cleaned_name = bong_tools._clean_for_embedding(username) if username else ""
 
+        # Build the list of searches to run — each entry paired with whether it's user-scoped
         searches = []
         is_user_search = []
 
         if user_id:
+            # Filtered search: only memories saved with this user's ID
             searches.append(bong_tools._vector_db.similarity_search_with_relevance_scores(
                 cleaned_query, k=k, filter={"user_id": user_id}
             ))
             is_user_search.append(True)
 
+        # General search across all memories
         searches.append(bong_tools._vector_db.similarity_search_with_relevance_scores(cleaned_query, k=k))
         is_user_search.append(False)
 
+        # Secondary search by display name if provided
         if cleaned_name:
             searches.append(bong_tools._vector_db.similarity_search_with_relevance_scores(cleaned_name, k=k))
             is_user_search.append(False)
 
+        # Merge results from all searches, deduplicating by document ID or content
         for search_docs, from_user_search in zip(searches, is_user_search):
             for doc, score in search_docs:
-                if score < 0.5:
+                if score < 0.5:  # Skip results with low relevance
                     continue
                 doc_id = doc.id if hasattr(doc, 'id') else doc.metadata.get("id")
                 norm = doc.page_content.strip().lower()
@@ -83,6 +113,7 @@ def retrieve_memories(query: str, username: str = "", user_id: int = None, k: in
                 if dedup_key in seen_ids:
                     continue
                 seen_ids.add(dedup_key)
+                # Boost scores from user-specific searches so personal memories rank higher
                 adjusted_score = score * (1.0 + bong_tools.USER_MEMORY_SCORE_BOOST) if from_user_search else score
                 all_results.append((doc.page_content, adjusted_score))
 
@@ -96,37 +127,60 @@ def retrieve_memories(query: str, username: str = "", user_id: int = None, k: in
         return ""
 
 
+def _expire_old_memories(days: int = 36500):
+    """Delete memories older than the given number of days (default ~100 years = effectively never)."""
+    try:
+        cutoff = (datetime.now() - timedelta(days=days)).timestamp()
+        collection = bong_tools._vector_db._collection
+        result = collection.get(where={"saved_at": {"$lt": cutoff}})
+        if result["ids"]:
+            collection.delete(ids=result["ids"])
+            debug.log("Memory", f"Expired {len(result['ids'])} old memories")
+    except Exception as e:
+        debug.log("Memory", f"Expiry cleanup failed: {e}")
+
+# Run expiry check once on module load
+_expire_old_memories()
+
+# --- Bong's Discord user ID ---
+# Used by the classifier in bong.py to detect mentions/pings directed at the bot.
+# Change this if the bot runs under a different Discord account.
 BOT_USER_ID = "698627881760456724"
 
-# Shared state — tools write to these during the sync tool loop,
-# and the cog reads/acts on them afterwards since Discord calls are async
-pending_reactions = []       # Emoji reactions queued by the react tool
-pending_join_voice = None    # User ID to join voice with, set by join_voice
-pending_leave_voice = None    # Flag set by leave_voice
-pending_shutdown = False     # Flag set by shutdown
-pending_play_audio = None    # File path to play in voice chat, set by play_audio
+# --- Shared pending state ---
+# These flags are written to by the sync tool functions during the LLM's tool loop,
+# then read and acted on by the async cog in bong.py after the loop finishes.
+# This bridge pattern exists because LangChain tools are sync but Discord calls are async.
+pending_reactions = []       # List of emoji strings queued by the react tool
+pending_join_voice = None    # Discord user ID to join voice with (set by join_voice)
+pending_leave_voice = None   # Flag set by leave_voice
+pending_shutdown = False      # Flag set by shutdown
+pending_play_audio = None    # File path of the mp3 to play (set by play_audio)
 pending_pause = False        # Flag set by pause_audio
 pending_resume = False       # Flag set by resume_audio
 pending_stop = False         # Flag set by stop_audio
-pending_skip = False          # Flag set by skip_audio
-pending_skip_target = None   # File path for skip's next track (independent of pending_play_audio)
-pending_skip_info = ""      # Next track name set by skip_audio
+pending_skip = False         # Flag set by skip_audio
+pending_skip_target = None   # File path for the next track after skip (independent of pending_play_audio)
+pending_skip_info = ""       # Human-readable name of the skip target track
 
-pending_send_image = None    # File path to send as an image, set by send_image
-pending_send_text = None     # File path to send as a text file, set by send_text
+pending_send_image = None    # File path to send as an image attachment
+pending_send_text = None     # File path to send as a text file attachment
 
-voice_connected = False    # Set by the cog before the tool loop; True if bot is in a voice channel
-caller_in_voice = False    # Set by the cog before the tool loop; True if the user issuing commands is in a voice channel
-current_user_id = None     # Set by the cog before the tool loop; Discord user ID of the current user
+# --- Voice/music state (set by the cog before each tool loop) ---
+voice_connected = False   # True if bot is currently in a voice channel
+caller_in_voice = False   # True if the user who sent the message is in a voice channel
+current_user_id = None    # Discord user ID of the user who sent the current message
 
-authorized = False
-shuffle_enabled = False
-loop_enabled = False
-loop_track = None
-current_track = None
+# --- Authorization and playback state ---
+authorized = False        # Whether the current user is in ALLOWED_USERS (set by cog)
+shuffle_enabled = False   # Whether shuffle mode is on
+loop_enabled = False      # Whether loop mode is on
+loop_track = None         # File path of the track being looped (None = loop current track)
+current_track = None       # File path of the currently playing track
+
 
 def reset_pending():
-    """Clear all pending state flags. Called from the cog on exception or after dispatch."""
+    """Clear all pending state flags. Called from the cog on exception to prevent stale state leaking into the next message."""
     bong_tools.pending_reactions.clear()
     bong_tools.pending_join_voice = None
     bong_tools.pending_leave_voice = None
@@ -141,9 +195,14 @@ def reset_pending():
     bong_tools.pending_send_image = None
     bong_tools.pending_send_text = None
 
+
+# --- File library caches ---
+# These lists are refreshed on demand by scanning the respective directories.
+# They're populated once at module load and then updated by refresh functions.
 image_library = []
 
 def refresh_image_library():
+    """Rescan the saved_images directory and update image_library."""
     bong_tools.image_library = sorted(
         p for p in bong_tools.IMAGE_DIR.iterdir()
         if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
@@ -152,6 +211,7 @@ def refresh_image_library():
 text_library = []
 
 def refresh_text_library():
+    """Rescan the saved_texts directory and update text_library."""
     bong_tools.text_library = sorted(
         p for p in bong_tools.TEXT_DIR.iterdir()
         if p.suffix.lower() in (".txt", ".md", ".py", ".json", ".csv", ".xml", ".yaml", ".yml", ".cfg", ".ini", ".log", ".toml", ".rs", ".js", ".ts", ".html", ".css", ".sh", ".bat")
@@ -160,11 +220,19 @@ def refresh_text_library():
 music_library = []
 
 def refresh_music_library():
+    """Rescan the saved_sounds directory and update music_library."""
     bong_tools.music_library = sorted(bong_tools.DOWNLOAD_DIR.glob("*.mp3"))
 
+# Initial population of all libraries at module load time
 refresh_music_library()
 refresh_image_library()
 refresh_text_library()
+
+
+# ========== Tool definitions ==========
+# Each function decorated with @tool becomes callable by the LLM.
+# The docstring serves as the tool's description — the LLM uses it to decide
+# when and how to call each tool. Args become parameters the LLM must provide.
 
 @tool
 def react(emojis: str) -> str:
@@ -183,6 +251,7 @@ def current_time() -> str:
     return datetime.now().strftime("%H:%M")
 
 # --- Search tools ---
+
 @tool
 def web_search(query: str) -> str:
     """Search the web for information. Use this when you need to look up facts, news, or any information you don't know.
@@ -223,6 +292,7 @@ def youtube_search(query: str) -> str:
         return f"YouTube search error: {e}"
 
 # --- Audio download tools ---
+
 @tool
 def download_music(query: str) -> str:
     """Download an mp3 audio file. Accepts either a YouTube URL or a song name. If given a song name, automatically searches YouTube for it. The current music library is listed above — check it before downloading, and if the song is already there use play_audio instead.
@@ -231,15 +301,18 @@ def download_music(query: str) -> str:
     """
     bong_tools.refresh_music_library()
 
+    # Determine if the query is a direct URL or a search term
     is_url = "youtube.com" in query or "youtu.be" in query
     url = query if is_url else None
 
+    # Check if a similar song already exists in the library (fuzzy match by name)
     query_lower = query.lower()
     fuzzy_matches = [(i, f) for i, f in enumerate(bong_tools.music_library) if query_lower in f.stem.lower() or f.stem.lower() in query_lower]
     if fuzzy_matches:
         matched = ", ".join(f"{f.stem} (index {i})" for i, f in fuzzy_matches)
         return f"A similar song is already in the library: {matched}. Use play_audio to play it instead of downloading again."
 
+    # If not a URL, search YouTube for a matching video
     if not is_url:
         try:
             with DDGS() as ddgs:
@@ -254,10 +327,13 @@ def download_music(query: str) -> str:
         except Exception as e:
             return f"YouTube search failed: {e}"
 
+    # Download the audio using yt-dlp
     try:
+        # First pass: extract info without downloading to get the clean title
         with YoutubeDL({"quiet": True, "no_warnings": True}) as probe:
             info = probe.extract_info(url, download=False)
             title = info.get("title", "unknown")
+            # Strip characters that are unsafe for filenames
             clean_title = re.sub(r'[^\w\s\[\]\(\)\{\}]', '', title).strip()
             clean_title = re.sub(r' {2,}', ' ', clean_title)
             if not clean_title:
@@ -265,6 +341,7 @@ def download_music(query: str) -> str:
             candidate = bong_tools.DOWNLOAD_DIR / f"{clean_title}.mp3"
             if candidate.exists():
                 return f"'{clean_title}' is already in the library. Use play_audio with '{clean_title}' to play it."
+        # Second pass: actually download and convert to mp3
         out_template = str(bong_tools.DOWNLOAD_DIR / f"{clean_title}.%(ext)s")
         ydl_opts = {
             "format": "bestaudio/best",
@@ -333,21 +410,25 @@ def play_audio(index: int = -1, name: str = "") -> str:
         return "No music files available. Download some first."
     if not bong_tools.voice_connected and not bong_tools.pending_join_voice:
         return "Not in a voice channel. Join a voice channel first using join_voice before playing music."
+    # If a name was provided, try to match it against the library
     if name:
         bong_tools.refresh_music_library()
         files = bong_tools.music_library
         name_lower = name.lower()
+        # Try exact match first
         exact = [(i, f) for i, f in enumerate(files) if f.stem.lower() == name_lower]
         if exact:
             i, f = exact[0]
             bong_tools.pending_play_audio = str(f)
             return f"Queued '{f.stem}' for playback."
+        # Fall back to partial match (substring in either direction)
         partial = [(i, f) for i, f in enumerate(files) if name_lower in f.stem.lower() or f.stem.lower() in name_lower]
         if partial:
             i, f = partial[0]
             bong_tools.pending_play_audio = str(f)
             return f"Queued '{f.stem}' for playback."
         return f"No song matching '{name}' found. Use search_music to find the right track."
+    # Otherwise, use the index
     if index < 0 or index >= len(files):
         return f"Index {index} out of range. Use list_music or search_music to find the right track (0-{len(files)-1})."
     bong_tools.pending_play_audio = str(files[index])
@@ -406,6 +487,7 @@ def loop_audio(index: int = -1) -> str:
     """
     if not bong_tools.caller_in_voice:
         return "The user needs to be in a voice channel to use music commands. This might be someone trolling from outside the voice channel."
+    # Toggle: calling again disables loop
     if bong_tools.loop_enabled:
         bong_tools.loop_enabled = False
         bong_tools.loop_track = None
@@ -419,6 +501,7 @@ def loop_audio(index: int = -1) -> str:
         bong_tools.loop_enabled = True
         bong_tools.loop_track = str(files[index])
         return f"Looping '{files[index].stem}'."
+    # Loop the currently playing song
     bong_tools.loop_enabled = True
     bong_tools.loop_track = None
     return "Looping the current song."
@@ -495,6 +578,8 @@ def read_text_file(index: int = 0) -> str:
     Args:
         index: The 0-based index of the text file attachment to read (default 0 for the first text file).
     """
+    # Actual processing happens in bong.py's _handle_read_text_file,
+    # because it needs async access to the message attachment data
     return "Text file request handled by cog."
 
 # --- Voice channel tools ---
@@ -526,6 +611,8 @@ def describe_image(index: int = 0, question: str = "Briefly describe this image 
         index: The 0-based index of the image attachment to describe (default 0 for the first image).
         question: What to ask about the image (default: brief description). Use "Read all the text in this image." for OCR, or "Describe this image in detail." for a thorough description.
     """
+    # Actual processing happens in bong.py's _handle_describe_image,
+    # because it needs async access to the vision model and base64 image data
     return "Vision request handled by cog."
 
 # --- System tools ---
@@ -537,12 +624,13 @@ def save_memory(fact: str) -> str:
         fact: A concise fact or piece of information to remember (e.g. "Eve loves dubstep and skrillex", "Radon is an orange fox who likes cars").
     """
     try:
+        # Check for similar existing memories to avoid duplicates
         similar = bong_tools._vector_db.similarity_search_with_relevance_scores(fact, k=3, filter={"user_id": bong_tools.current_user_id})
         for doc, score in similar:
             if score >= 0.7:
                 return f"Already remembered something similar: {doc.page_content}"
         clean_fact = bong_tools._clean_for_embedding(fact)
-        bong_tools._vector_db.add_texts([clean_fact], metadatas=[{"user_id": bong_tools.current_user_id}])
+        bong_tools._vector_db.add_texts([clean_fact], metadatas=[{"user_id": bong_tools.current_user_id, "saved_at": datetime.now().timestamp()}])
         return f"Remembered: {clean_fact}"
     except Exception as e:
         return f"Failed to save memory: {e}"
@@ -578,8 +666,8 @@ def shutdown() -> str:
     bong_tools.pending_shutdown = True
     return "Shutting down"
 
-# All tools the model can call
+# All tools the model can call — this list is bound to the LLM so it knows what's available
 tools = [react, describe_image, read_text_file, join_voice, leave_voice, current_time, web_search, youtube_search, download_music, list_music, search_music, play_audio, loop_audio, pause_audio, resume_audio, stop_audio, skip_audio, music_shuffle_enabled, list_images, send_image, list_texts, send_text, save_memory, recall_memories_by_userid, recall_memories_general, shutdown]
 
-# Lookup dict from tool name to tool function for dispatching tool calls
+# Lookup dict from tool name to tool function — used by dispatch_tool in bong.py
 tool_map = {t.name: t for t in tools}
