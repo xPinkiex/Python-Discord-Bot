@@ -56,7 +56,8 @@ debug.py             Logging utility
 
 - Python 3.10+
 - [Ollama](https://ollama.ai) running with the `nomic-embed-text` model locally for embeddings
-- A hosted `gemma3:12b-cloud` model endpoint (configured via Ollama)
+- `glm-5.1` model (main LLM for chat and tool-calling)
+- A hosted `gemma3:12b-cloud` model endpoint (configured via Ollama) for memory contradiction detection and URL summarization
 - ffmpeg installed (for audio playback)
 - A Discord bot token
 
