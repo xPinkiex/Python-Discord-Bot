@@ -4,7 +4,7 @@ A Discord bot with a furry protogen personality, powered by a local LLM (Ollama)
 
 ## Features
 
-- **LLM Chat** — Responds in-character as Bong, a green protogen with rainbow accents, using a local model via Ollama
+- **LLM Chat** — Responds in-character as Bong, a green protogen with rainbow accents, using a hosted model via Ollama
 - **Long-term Memory** — Saves facts about people, detects contradictions via LLM, recency-weighted retrieval, 180-day expiry
 - **Permission Tiers** — Three tiers (admin, authorized, user) with DM approval flow via Discord buttons
 - **DM Approval** — Unknown users who DM Bong trigger an approval request to the owner with User/Authorized/Admin/Deny buttons
@@ -55,7 +55,8 @@ debug.py             Logging utility
 ### Prerequisites
 
 - Python 3.10+
-- [Ollama](https://ollama.ai) running locally with `gemma3:12b-cloud` and `nomic-embed-text` models
+- [Ollama](https://ollama.ai) running with the `nomic-embed-text` model locally for embeddings
+- A hosted `gemma3:12b-cloud` model endpoint (configured via Ollama)
 - ffmpeg installed (for audio playback)
 - A Discord bot token
 
@@ -125,3 +126,7 @@ Use `@reload` in Discord (owner only) to hot-reload `bong`, `bong_tools`, `dm_ap
 | **User** | Basic chat access (approved via DM flow) |
 
 Unknown users who DM Bong trigger an approval request sent to the owner with role-selection buttons.
+
+---
+
+*This README was generated with AI assistance.*
