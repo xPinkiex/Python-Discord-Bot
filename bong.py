@@ -712,9 +712,9 @@ class BongCog(commands.Cog):
                 bong_tools.pending_shutdown = False
 
         except Exception as e:
-            error_message = f"Error generating response: {e}"
-            await message.channel.send(error_message)
-            history.insert(0, error_message)
+            debug.log("AI", f"Error generating response: {e}")
+            debug.log_to_file("AI", f"Error generating response: {e}")
+            await message.channel.send("Something went wrong processing that message. Try again?")
 
     @commands.command(name="llm", help="Toggle Bong's activity in the current channel")
     async def llm(self, ctx):

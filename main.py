@@ -1,6 +1,7 @@
 import discord
 import os
 import sys
+import types
 import importlib
 from dotenv import load_dotenv
 from discord.ext import commands
@@ -30,13 +31,22 @@ async def on_ready():
 @commands.is_owner()
 async def reload_ext(ctx, util: str = "bong"):
     try:
+        snapshots = {}
         for mod in [util, util + "_tools", "debug"]:
             if mod in sys.modules:
+                snapshots[mod] = {k: getattr(sys.modules[mod], k) for k in dir(sys.modules[mod])
+                    if not k.startswith("__") and not isinstance(getattr(sys.modules[mod], k), (types.FunctionType, types.ModuleType, type))}
                 importlib.reload(sys.modules[mod])
+                for k, v in snapshots[mod].items():
+                    setattr(sys.modules[mod], k, v)
             debug.log("Bot", f"Reloaded module {mod}")
         for mod_name in list(sys.modules):
             if mod_name.startswith(util + ".") or (mod_name != util and util in mod_name.split(".")):
+                snapshots[mod_name] = {k: getattr(sys.modules[mod_name], k) for k in dir(sys.modules[mod_name])
+                    if not k.startswith("__") and not isinstance(getattr(sys.modules[mod_name], k), (types.FunctionType, types.ModuleType, type))}
                 importlib.reload(sys.modules[mod_name])
+                for k, v in snapshots[mod_name].items():
+                    setattr(sys.modules[mod_name], k, v)
                 debug.log("Bot", f"Reloaded submodule {mod_name}")
 
         await bot.unload_extension(util)

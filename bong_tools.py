@@ -1,6 +1,5 @@
 # bong_tools.py — LangChain tool definitions and shared state for Bong
 
-import os
 import random
 import re
 from datetime import datetime
@@ -159,12 +158,7 @@ def react(emojis: str) -> str:
         bong_tools.pending_reactions.append(emoji)
     return f"Reacted with {emojis}"
 
-@tool
-def clear_console() -> str:
-    """Clear the bot's console/terminal screen. Use this when the user asks you to clear the console or clean up the terminal.
-    """
-    os.system("cls" if os.name == "nt" else "clear")
-    return "Console cleared"
+
 @tool
 
 def current_time() -> str:
@@ -251,10 +245,10 @@ def download_music(query: str) -> str:
             clean_title = re.sub(r' {2,}', ' ', clean_title)
             if not clean_title:
                 clean_title = f"untitled_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            candidate = DOWNLOAD_DIR / f"{clean_title}.mp3"
+            candidate = bong_tools.DOWNLOAD_DIR / f"{clean_title}.mp3"
             if candidate.exists():
                 return f"'{clean_title}' is already in the library. Use play_audio with '{clean_title}' to play it."
-        out_template = str(DOWNLOAD_DIR / f"{clean_title}.%(ext)s")
+        out_template = str(bong_tools.DOWNLOAD_DIR / f"{clean_title}.%(ext)s")
         ydl_opts = {
             "format": "bestaudio/best",
             "noplaylist": True,
@@ -535,7 +529,7 @@ def shutdown() -> str:
     return "Shutting down"
 
 # All tools the model can call
-tools = [react, describe_image, read_text_file, join_voice, leave_voice, clear_console, current_time, web_search, youtube_search, download_music, list_music, play_audio, loop_audio, pause_audio, resume_audio, stop_audio, skip_audio, music_shuffle_enabled, list_images, send_image, list_texts, send_text, save_memory, recall_memories_by_userid, recall_memories_general, shutdown]
+tools = [react, describe_image, read_text_file, join_voice, leave_voice, current_time, web_search, youtube_search, download_music, list_music, play_audio, loop_audio, pause_audio, resume_audio, stop_audio, skip_audio, music_shuffle_enabled, list_images, send_image, list_texts, send_text, save_memory, recall_memories_by_userid, recall_memories_general, shutdown]
 
 # Lookup dict from tool name to tool function for dispatching tool calls
 tool_map = {t.name: t for t in tools}
