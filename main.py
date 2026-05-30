@@ -33,6 +33,8 @@ async def on_ready():
     """Called when the bot connects to Discord and is ready to receive events."""
     debug.log("Bot", 'Bot booted, loading extensions...')
     await bot.load_extension('bong')
+    import bong_tools
+    bong_tools._expire_old_memories()
     debug.log("Bot", f'Bot logged in as {bot.user}')
 
 @bot.command(name='reload')
@@ -117,7 +119,7 @@ async def poweroff(ctx):
 
 @bot.command(name='debug', help="Toggle debug mode")
 @commands.is_owner()
-async def toggle_debug(ctx, enabled: bool = None):
+async def toggle_debug(ctx, enabled: bool | None = None):
     """Toggle or set debug mode. Only the bot owner can use this.
     
     With no argument, toggles debug mode on/off.

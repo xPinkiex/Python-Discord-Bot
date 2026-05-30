@@ -24,6 +24,8 @@ from yt_dlp import YoutubeDL
 # ChromaDB vector store for persistent long-term memory
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings
+from langchain_ollama.chat_models import ChatOllama
+from langchain_core.messages import HumanMessage, SystemMessage
 
 # Self-reference import — tools use bong_tools.X to read/write module-level state
 # reliably even after hot reloads (importlib.reload replaces the module object)
@@ -56,6 +58,12 @@ _BOILERPLATE = re.compile(r"\bbong\b['']?s?\b", re.IGNORECASE)
 _USERID_TAG = re.compile(r"\s*\(userID:?\s*\d+\)", re.IGNORECASE)
 # Score boost applied to user-specific memory matches vs general matches (0.25 = 25%)
 USER_MEMORY_SCORE_BOOST = 0.25
+# How many days before memories expire automatically
+MEMORY_EXPIRY_DAYS = 180
+# Minimum similarity score for a memory to be considered a potential contradiction
+CONTRADICTION_THRESHOLD = 0.75
+# Lightweight LLM used to judge whether two memories truly contradict each other
+_contradiction_model = ChatOllama(model="gemma3:12b-cloud", temperature=0.0, num_predict=5, keep_alive=-1)
 
 
 def _clean_for_embedding(text: str) -> str:
@@ -65,15 +73,63 @@ def _clean_for_embedding(text: str) -> str:
     return text.strip()
 
 
-def retrieve_memories(query: str, username: str = "", user_id: int = None, k: int = 10) -> str:
+def _apply_recency_boost(score: float, saved_at: float, halflife_days: float = 60.0) -> float:
+    """Boost a memory's score based on how recently it was saved.
+
+    Uses exponential decay: memories are worth half their boost after `halflife_days`.
+    The boost ranges from +0.15 (just saved) down to near 0 for very old memories.
+    """
+    if not saved_at:
+        return score
+    age_days = (datetime.now().timestamp() - saved_at) / 86400.0
+    if age_days < 0:
+        age_days = 0
+    recency_boost = 0.15 * (0.5 ** (age_days / halflife_days))
+    return score + recency_boost
+
+
+def _batch_increment_access_counts(doc_ids: list):
+    """Increment the access_count metadata on multiple memory documents at once.
+
+    Takes a list of doc IDs, fetches all their metadatas in one call, then
+    updates them all in one call — avoiding O(2n) DB round-trips per recall.
+    Skips any IDs that are None.
+    """
+    valid_ids = [did for did in doc_ids if did is not None]
+    if not valid_ids:
+        return
+    try:
+        collection = bong_tools._vector_db._collection
+        result = collection.get(ids=valid_ids, include=["metadatas"])
+        if not result["metadatas"]:
+            return
+        updated_ids = []
+        updated_metas = []
+        for i, meta in enumerate(result["metadatas"]):
+            new_meta = dict(meta)
+            raw_count = new_meta.get("access_count", 0)
+            new_meta["access_count"] = (int(raw_count) + 1) if isinstance(raw_count, (int, float)) else 1
+            updated_ids.append(result["ids"][i])
+            updated_metas.append(new_meta)
+        collection.update(ids=updated_ids, metadatas=updated_metas)
+    except Exception:
+        pass
+
+
+def retrieve_memories(query: str, username: str = "", user_id: int | None = None, k: int = 10) -> str:
     """Retrieve the k most relevant long-term memories for a given query.
-    
+
     Searches work in three layers, merged and deduplicated:
       1. If user_id is given — search only that user's saved memories (score boosted)
       2. General search across all memories
       3. If username is given — search by username as a secondary query
-    
-    Returns a newline-separated list of memories sorted by relevance, or "" if none found.
+
+    Scores are adjusted by:
+      - User-scoped boost (personal memories rank higher)
+      - Recency boost (newer memories rank higher)
+      - Frequency boost (frequently recalled memories rank higher)
+
+    Returns a newline-separated list of memories with metadata, sorted by relevance, or "" if none found.
     """
     try:
         seen_ids = set()
@@ -82,53 +138,146 @@ def retrieve_memories(query: str, username: str = "", user_id: int = None, k: in
         cleaned_query = bong_tools._clean_for_embedding(query)
         cleaned_name = bong_tools._clean_for_embedding(username) if username else ""
 
-        # Build the list of searches to run — each entry paired with whether it's user-scoped
         searches = []
         is_user_search = []
 
         if user_id:
-            # Filtered search: only memories saved with this user's ID
             searches.append(bong_tools._vector_db.similarity_search_with_relevance_scores(
                 cleaned_query, k=k, filter={"user_id": user_id}
             ))
             is_user_search.append(True)
 
-        # General search across all memories
         searches.append(bong_tools._vector_db.similarity_search_with_relevance_scores(cleaned_query, k=k))
         is_user_search.append(False)
 
-        # Secondary search by display name if provided
         if cleaned_name:
             searches.append(bong_tools._vector_db.similarity_search_with_relevance_scores(cleaned_name, k=k))
             is_user_search.append(False)
 
-        # Merge results from all searches, deduplicating by document ID or content
         for search_docs, from_user_search in zip(searches, is_user_search):
             for doc, score in search_docs:
-                if score < 0.5:  # Skip results with low relevance
+                if score < 0.5:
                     continue
                 doc_id = doc.id if hasattr(doc, 'id') else doc.metadata.get("id")
                 norm = doc.page_content.strip().lower()
-                dedup_key = doc_id or norm
+                dedup_key = doc_id if doc_id is not None else norm
                 if dedup_key in seen_ids:
                     continue
                 seen_ids.add(dedup_key)
-                # Boost scores from user-specific searches so personal memories rank higher
+
                 adjusted_score = score * (1.0 + bong_tools.USER_MEMORY_SCORE_BOOST) if from_user_search else score
-                all_results.append((doc.page_content, adjusted_score))
+
+                saved_at = doc.metadata.get("saved_at")
+                if saved_at:
+                    adjusted_score = bong_tools._apply_recency_boost(adjusted_score, saved_at)
+
+                access_count = doc.metadata.get("access_count", 0)
+                if access_count:
+                    adjusted_score += min(0.05 * access_count, 0.25)
+
+                all_results.append((doc, doc_id, adjusted_score))
 
         if not all_results:
             debug.log("Memory", "No relevant memories found")
             return ""
+
+        bong_tools._batch_increment_access_counts([doc_id for _, doc_id, _ in all_results])
+
         debug.log("Memory", f"Retrieved {len(all_results)} memories for query")
-        return "\n".join(f"- {m}" for m, _ in sorted(all_results, key=lambda x: x[1], reverse=True))
+
+        formatted = []
+        for doc, _, s in sorted(all_results, key=lambda x: x[2], reverse=True):
+            meta_parts = []
+            saved_at = doc.metadata.get("saved_at")
+            if saved_at:
+                try:
+                    meta_parts.append(f"saved {datetime.fromtimestamp(saved_at).strftime('%Y-%m-%d')}")
+                except Exception:
+                    pass
+            uname = doc.metadata.get("username")
+            if uname:
+                meta_parts.append(f"about {uname}")
+            meta_str = f" ({', '.join(meta_parts)})" if meta_parts else ""
+            formatted.append(f"- {doc.page_content}{meta_str}")
+
+        return "\n".join(formatted)
     except Exception as e:
         debug.log("Memory", f"Retrieval error: {e}")
         return ""
 
 
-def _expire_old_memories(days: int = 36500):
-    """Delete memories older than the given number of days (default ~100 years = effectively never)."""
+def _extract_response_text(response) -> str:
+    """Extract plain text from an LLM response, handling both str and list content."""
+    content = response.content
+    if isinstance(content, list):
+        return "".join(chunk.text if hasattr(chunk, "text") else str(chunk) for chunk in content)
+    return str(content or "")
+
+
+def _is_contradiction(new_fact: str, existing_fact: str) -> bool:
+    """Use a lightweight LLM to judge whether a new fact contradicts an existing one.
+
+    Returns True if the two facts are mutually exclusive — i.e. they cannot both
+    be true at the same time about the same subject. Things like "Eve likes rock"
+    and "Eve likes dubstep" are NOT contradictory and return False.
+    """
+    try:
+        prompt = (
+            f"Are these two facts contradictory (i.e. they cannot both be true)? "
+            f"Answer ONLY 'YES' or 'NO'.\n\n"
+            f"Fact A: {existing_fact}\n"
+            f"Fact B: {new_fact}"
+        )
+        response = bong_tools._contradiction_model.invoke([
+            SystemMessage(content="You are a precise logic checker. Answer only YES or NO."),
+            HumanMessage(content=prompt),
+        ])
+        answer = bong_tools._extract_response_text(response).upper()
+        return "YES" in answer
+    except Exception as e:
+        debug.log("Memory", f"Contradiction check failed: {e}")
+        return False
+
+
+def _find_contradiction(fact: str, user_id: int | None) -> str | None:
+    """Find an existing memory that semantically contradicts a new fact.
+
+    First finds highly similar memories via embedding search, then uses a
+    lightweight LLM (gemma3:12b-cloud) to judge whether the similarity is
+    actually a contradiction. Returns the doc ID of the contradictory memory,
+    or None if no contradiction found.
+    """
+    try:
+        candidates = []
+
+        if user_id:
+            similar = bong_tools._vector_db.similarity_search_with_relevance_scores(
+                fact, k=5, filter={"user_id": user_id}
+            )
+            for doc, score in similar:
+                if score >= bong_tools.CONTRADICTION_THRESHOLD:
+                    candidates.append(doc)
+
+        if not candidates:
+            similar_general = bong_tools._vector_db.similarity_search_with_relevance_scores(
+                fact, k=5
+            )
+            for doc, score in similar_general:
+                if score >= bong_tools.CONTRADICTION_THRESHOLD:
+                    if not user_id or doc.metadata.get("user_id") == user_id:
+                        candidates.append(doc)
+
+        for doc in candidates:
+            if bong_tools._is_contradiction(fact, doc.page_content):
+                return doc.id if hasattr(doc, 'id') else doc.metadata.get("id")
+
+        return None
+    except Exception:
+        return None
+
+
+def _expire_old_memories(days: int = MEMORY_EXPIRY_DAYS):
+    """Delete memories older than the given number of days."""
     try:
         cutoff = (datetime.now() - timedelta(days=days)).timestamp()
         collection = bong_tools._vector_db._collection
@@ -139,8 +288,7 @@ def _expire_old_memories(days: int = 36500):
     except Exception as e:
         debug.log("Memory", f"Expiry cleanup failed: {e}")
 
-# Run expiry check once on module load
-_expire_old_memories()
+
 
 # --- Bong's Discord user ID ---
 # Used by the classifier in bong.py to detect mentions/pings directed at the bot.
@@ -173,6 +321,7 @@ current_user_id = None    # Discord user ID of the user who sent the current mes
 
 # --- Authorization and playback state ---
 authorized = False        # Whether the current user is in ALLOWED_USERS (set by cog)
+current_username = ""     # Display name of the user who sent the current message (set by cog)
 shuffle_enabled = False   # Whether shuffle mode is on
 loop_enabled = False      # Whether loop mode is on
 loop_track = None         # File path of the track being looped (None = loop current track)
@@ -303,7 +452,7 @@ def download_music(query: str) -> str:
 
     # Determine if the query is a direct URL or a search term
     is_url = "youtube.com" in query or "youtu.be" in query
-    url = query if is_url else None
+    url = query if is_url else ""
 
     # Check if a similar song already exists in the library (fuzzy match by name)
     query_lower = query.lower()
@@ -332,7 +481,7 @@ def download_music(query: str) -> str:
         # First pass: extract info without downloading to get the clean title
         with YoutubeDL({"quiet": True, "no_warnings": True}) as probe:
             info = probe.extract_info(url, download=False)
-            title = info.get("title", "unknown")
+            title = str(info.get("title", "unknown") or "unknown")
             # Strip characters that are unsafe for filenames
             clean_title = re.sub(r'[^\w\s\[\]\(\)\{\}]', '', title).strip()
             clean_title = re.sub(r' {2,}', ' ', clean_title)
@@ -343,7 +492,7 @@ def download_music(query: str) -> str:
                 return f"'{clean_title}' is already in the library. Use play_audio with '{clean_title}' to play it."
         # Second pass: actually download and convert to mp3
         out_template = str(bong_tools.DOWNLOAD_DIR / f"{clean_title}.%(ext)s")
-        ydl_opts = {
+        ydl_opts: dict = {
             "format": "bestaudio/best",
             "noplaylist": True,
             "postprocessors": [{
@@ -355,7 +504,7 @@ def download_music(query: str) -> str:
             "quiet": True,
             "no_warnings": True,
         }
-        with YoutubeDL(ydl_opts) as ydl:
+        with YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
             mp3_path = Path(filename).with_suffix(".mp3")
@@ -619,18 +768,47 @@ def describe_image(index: int = 0, question: str = "Briefly describe this image 
 
 @tool
 def save_memory(fact: str) -> str:
-    """Save an important fact to long-term memory. Use this to remember things about users, preferences, inside jokes, or any information worth recalling later. Be selective — only save things that are genuinely useful to remember.
+    """Save an important fact to long-term memory. Use this to remember things about users, preferences, inside jokes, or any information worth recalling later. Be selective — only save things that are genuinely useful to remember. If the fact contradicts or updates something already remembered, the old memory will be replaced automatically.
     Args:
         fact: A concise fact or piece of information to remember (e.g. "Eve loves dubstep and skrillex", "Radon is an orange fox who likes cars").
     """
     try:
-        # Check for similar existing memories to avoid duplicates
-        similar = bong_tools._vector_db.similarity_search_with_relevance_scores(fact, k=3, filter={"user_id": bong_tools.current_user_id})
+        clean_fact = bong_tools._clean_for_embedding(fact)
+
+        # Check for contradictions — if this fact supersedes an existing one, replace it
+        contradiction_id = bong_tools._find_contradiction(clean_fact, bong_tools.current_user_id)
+        if contradiction_id:
+            collection = bong_tools._vector_db._collection
+            try:
+                old = collection.get(ids=[contradiction_id], include=["documents", "metadatas"])
+                old_text = old["documents"][0] if old["documents"] else "(unknown)"
+                old_meta = dict(old["metadatas"][0]) if old["metadatas"] else {}
+                collection.delete(ids=[contradiction_id])
+                # Preserve the original metadata but update the fact text and timestamp
+                old_meta["saved_at"] = datetime.now().timestamp()
+                if bong_tools.current_username:
+                    old_meta["username"] = bong_tools.current_username
+                bong_tools._vector_db.add_texts([clean_fact], metadatas=[old_meta])
+                return f"Updated memory: {old_text} → {clean_fact}"
+            except Exception as e:
+                bong_tools._vector_db.add_texts(
+                    [clean_fact],
+                    metadatas=[{"user_id": bong_tools.current_user_id, "saved_at": datetime.now().timestamp(), "username": bong_tools.current_username or ""}],
+                )
+                return f"Remembered: {clean_fact} (failed to replace old: {e})"
+
+        # No contradiction — check for exact/near duplicates across all users
+        similar = bong_tools._vector_db.similarity_search_with_relevance_scores(clean_fact, k=3)
         for doc, score in similar:
             if score >= 0.7:
-                return f"Already remembered something similar: {doc.page_content}"
-        clean_fact = bong_tools._clean_for_embedding(fact)
-        bong_tools._vector_db.add_texts([clean_fact], metadatas=[{"user_id": bong_tools.current_user_id, "saved_at": datetime.now().timestamp()}])
+                existing_uid = doc.metadata.get("user_id")
+                if existing_uid == bong_tools.current_user_id:
+                    return f"Already remembered something similar: {doc.page_content}"
+
+        bong_tools._vector_db.add_texts(
+            [clean_fact],
+            metadatas=[{"user_id": bong_tools.current_user_id, "saved_at": datetime.now().timestamp(), "username": bong_tools.current_username or ""}],
+        )
         return f"Remembered: {clean_fact}"
     except Exception as e:
         return f"Failed to save memory: {e}"
@@ -658,6 +836,26 @@ def recall_memories_general(query: str) -> str:
     return results
 
 @tool
+def forget_memory(query: str) -> str:
+    """Delete a long-term memory that is no longer accurate or wanted. Use this when someone tells you to forget something, or when you realize a saved memory is wrong. Searches for the most similar memory and deletes it. Can only delete memories belonging to the current user.
+    Args:
+        query: A description of the memory to forget (e.g. "Eve likes dubstep", "Radon's favorite color").
+    """
+    try:
+        clean_query = bong_tools._clean_for_embedding(query)
+        results = bong_tools._vector_db.similarity_search_with_relevance_scores(clean_query, k=3, filter={"user_id": bong_tools.current_user_id})
+        for doc, score in results:
+            if score >= 0.5:
+                doc_id = doc.id if hasattr(doc, 'id') else doc.metadata.get("id")
+                if doc_id:
+                    collection = bong_tools._vector_db._collection
+                    collection.delete(ids=[doc_id])
+                    return f"Forgot: {doc.page_content}"
+        return "No similar memory found to forget. Try describing it differently."
+    except Exception as e:
+        return f"Failed to forget memory: {e}"
+
+@tool
 def shutdown() -> str:
     """Shut down the bot. Only use this when an authorized user explicitly asks you to shut down. If the user is not authorized (not in the allowed users list), do NOT call this tool — instead tell them they don't have permission.
     """
@@ -667,7 +865,7 @@ def shutdown() -> str:
     return "Shutting down"
 
 # All tools the model can call — this list is bound to the LLM so it knows what's available
-tools = [react, describe_image, read_text_file, join_voice, leave_voice, current_time, web_search, youtube_search, download_music, list_music, search_music, play_audio, loop_audio, pause_audio, resume_audio, stop_audio, skip_audio, music_shuffle_enabled, list_images, send_image, list_texts, send_text, save_memory, recall_memories_by_userid, recall_memories_general, shutdown]
+tools = [react, describe_image, read_text_file, join_voice, leave_voice, current_time, web_search, youtube_search, download_music, list_music, search_music, play_audio, loop_audio, pause_audio, resume_audio, stop_audio, skip_audio, music_shuffle_enabled, list_images, send_image, list_texts, send_text, save_memory, recall_memories_by_userid, recall_memories_general, forget_memory, shutdown]
 
 # Lookup dict from tool name to tool function — used by dispatch_tool in bong.py
 tool_map = {t.name: t for t in tools}

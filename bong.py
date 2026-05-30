@@ -100,8 +100,8 @@ async def is_talking_to_bong(message_content: str, recent_messages: list, reply_
     try:
         # Run the classifier in a thread to avoid blocking the async event loop
         response = await asyncio.to_thread(classifier_model.invoke, [HumanMessage(content=prompt)])
-        response_text = response.content.strip().upper() if response.content else "NO"
-        return "YES" in response_text
+        response_text = _extract_response_text(response).upper()
+        return "YES" in response_text or response_text == ""
     except Exception:
         return False
 
@@ -269,7 +269,7 @@ async def _handle_describe_image(tool_args, image_attachments):
             {"type": "image_url", "image_url": f"data:{img['content_type']};base64,{img['base64']}"},
         ])
         label_response = await asyncio.to_thread(description_model.invoke, [label_msg])
-        raw_label = label_response.content.strip() if label_response.content else "image"
+        raw_label = _extract_response_text(label_response) or "image"
         label = re.sub(r'[^\w]', '', raw_label.replace(" ", "_"))[:50] or "image"
 
         # Save the image to saved_images/ with the generated label as filename
@@ -286,7 +286,7 @@ async def _handle_describe_image(tool_args, image_attachments):
             {"type": "image_url", "image_url": f"data:{img['content_type']};base64,{img['base64']}"},
         ])
         vision_response = await asyncio.to_thread(description_model.invoke, [vision_msg])
-        vision_text = vision_response.content.strip() if vision_response.content else "Could not describe image"
+        vision_text = _extract_response_text(vision_response) or "Could not describe image"
         return f"Description of '{img['filename']}': {vision_text}"
     except Exception as e:
         debug.log("AI", f"Vision error for {img['filename']}: {e}")
@@ -829,6 +829,7 @@ class BongCog(commands.Cog):
                 await update_voice_state(guild, message.author.id)
                 bong_tools.authorized = message.author.id in ALLOWED_USERS
                 bong_tools.current_user_id = message.author.id
+                bong_tools.current_username = message.author.display_name
 
                 # Bind tools to a fresh model instance for this request
                 bound_model = base_model.bind_tools(bong_tools.tools)
