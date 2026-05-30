@@ -34,7 +34,9 @@ async def on_ready():
     debug.log("Bot", 'Bot booted, loading extensions...')
     await bot.load_extension('bong')
     import bong_tools
+    import dm_approval
     bong_tools._expire_old_memories()
+    dm_approval.load_users()
     debug.log("Bot", f'Bot logged in as {bot.user}')
 
 @bot.command(name='reload')

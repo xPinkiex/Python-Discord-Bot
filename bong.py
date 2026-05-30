@@ -25,6 +25,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 
 import bong_tools
 import debug
+import dm_approval
 
 # --- LLM Models ---
 # The classifier model is fast and cheap — it only needs to output YES/NO
@@ -46,12 +47,10 @@ chat_memories = {}
 # Set of channel IDs where Bong is currently active (toggled with the @llm command)
 active_channels = set()
 
-# Discord user IDs allowed to use restricted commands (shutdown, channel toggle)
-ALLOWED_USERS = {
-    273761843544064000,  #Eve
-    773961674314219530,  #Radon
-    694228585371926572   #Erich
-}
+# Permission tiers are managed in dm_approval (users.json + OWNER_ID)
+# - admin:     full access (shutdown, @llm, DMs)
+# - authorized: full access (same as admin for now)
+# - user:      chatting + tools, no @llm or shutdown
 
 # Channels whose history is automatically loaded on startup so Bong has context immediately
 DEBUG_CHANNEL_IDS = [698924302594211883]
@@ -777,8 +776,23 @@ class BongCog(commands.Cog):
         # Ignore own messages
         if message.author == self.bot.user:
             return
-        # Only process messages in channels where Bong is active
-        if message.channel.id not in active_channels:
+
+        # Handle DMs — check approval before responding
+        if isinstance(message.channel, discord.DMChannel):
+            # Allowlisted users and pre-approved users skip the approval flow
+            if not dm_approval.is_known(message.author.id):
+                should_process = await dm_approval.process_dm(message, self.bot)
+                if not should_process:
+                    return
+            # Activate their DM channel for Bong if not already active
+            if message.channel.id not in active_channels:
+                active_channels.add(message.channel.id)
+                chat_memories.setdefault(message.channel.id, [])
+                async for msg in message.channel.history(limit=MAX_MEMORY_SIZE):
+                    chat_memories[message.channel.id].append(f"{msg.author.display_name} at {msg.created_at.strftime('%H:%M')}: {msg.content}")
+
+        # For guild channels, only process messages in active channels
+        if not isinstance(message.channel, discord.DMChannel) and message.channel.id not in active_channels:
             return
         # Ignore bot commands (messages starting with the command prefix that match a real command)
         if message.content.startswith(self.bot.command_prefix):
@@ -827,7 +841,7 @@ class BongCog(commands.Cog):
 
                 # Set up shared state for this message's tool loop
                 await update_voice_state(guild, message.author.id)
-                bong_tools.authorized = message.author.id in ALLOWED_USERS
+                bong_tools.authorized = dm_approval.is_authorized(message.author.id)
                 bong_tools.current_user_id = message.author.id
                 bong_tools.current_username = message.author.display_name
 
@@ -855,7 +869,7 @@ class BongCog(commands.Cog):
 
                 # Handle shutdown if the LLM called the shutdown tool
                 if bong_tools.pending_shutdown:
-                    if message.author.id in ALLOWED_USERS:
+                    if dm_approval.is_admin(message.author.id):
                         await message.add_reaction("🫡")
                         await self.bot.close()
                     else:
@@ -871,9 +885,8 @@ class BongCog(commands.Cog):
 
     @commands.command(name="llm", help="Toggle Bong's activity in the current channel")
     async def llm(self, ctx):
-        """Toggle Bong's activity in the current channel. If active, it will respond
-        to messages. If inactive, it will stop responding."""
-        if ctx.author.id not in ALLOWED_USERS:
+        """Toggle Bong's activity in the current channel. Only admin and authorized users can use this."""
+        if not dm_approval.is_authorized(ctx.author.id):
             await ctx.send("You are not authorized to use this command.")
             return
         if ctx.channel.id in active_channels:

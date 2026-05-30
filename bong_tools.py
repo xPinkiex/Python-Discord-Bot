@@ -320,7 +320,7 @@ caller_in_voice = False   # True if the user who sent the message is in a voice 
 current_user_id = None    # Discord user ID of the user who sent the current message
 
 # --- Authorization and playback state ---
-authorized = False        # Whether the current user is in ALLOWED_USERS (set by cog)
+authorized = False        # Whether the current user has admin or authorized tier (set by cog)
 current_username = ""     # Display name of the user who sent the current message (set by cog)
 shuffle_enabled = False   # Whether shuffle mode is on
 loop_enabled = False      # Whether loop mode is on
