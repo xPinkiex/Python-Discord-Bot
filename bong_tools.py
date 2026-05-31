@@ -455,8 +455,9 @@ def current_time() -> str:
             tz_str = f"UTC{sign}{hours}:{minutes:02d}"
         else:
             tz_str = f"UTC{sign}{hours}"
-        return f"Your local time ({tz_str}): {local_now.strftime('%H:%M')}\nUTC time: {utc_now.strftime('%H:%M')}"
-    return f"UTC time: {utc_now.strftime('%H:%M')}\nNo timezone set — use set_timezone if the user mentions their timezone."
+        name = bong_tools.current_username or "you"
+        return f"Current time for {name} ({tz_str}): {local_now.strftime('%H:%M on %A, %B %d')}\n(For reference, UTC is {utc_now.strftime('%H:%M on %A, %B %d')})"
+    return f"UTC time: {utc_now.strftime('%H:%M on %A, %B %d')}\nNo timezone set — use set_timezone if the user mentions their timezone."
 
 # --- Search tools ---
 
@@ -947,24 +948,27 @@ def forget_memory(query: str) -> str:
 
 @tool
 def set_reminder(message: str, time: str = "", time_delta: str = "") -> str:
-    """Set a reminder for the current user. Bong will DM them when the time is up. Supports both absolute times and relative durations.
+    """Set a reminder for the current user. Bong will DM them when the time is up.
 
-    For absolute times, use the 'time' parameter with natural language like "tomorrow at 3pm", "Friday at 12:00", "June 5 at 3pm", "next monday at 9am". Requires the user to have a timezone set — if they don't, ask them to set one using set_timezone first.
+    ALWAYS use the 'time' parameter when the user specifies a specific date or time, such as "tomorrow at 3pm", "Friday at noon", "on June 5th", "31.5 at 10:22", etc. Pass the user's exact words into 'time' — do NOT calculate a duration yourself. The system will handle timezone conversion automatically.
 
-    For relative durations, use the 'time_delta' parameter like "2 hours", "30 minutes", "1 day".
+    ONLY use 'time_delta' for simple relative durations like "in 30 minutes" or "2 hours from now" when no specific date/time is mentioned.
 
-    Do NOT use both parameters at the same time — pick one.
+    The 'time' parameter requires the user to have a timezone set. If they don't, ask them to set one with set_timezone first.
     Args:
         message: What to remind the user about (e.g. "feed the cat", "take out the trash").
-        time: An absolute date/time for the reminder in the user's timezone (e.g. "tomorrow at 3pm", "Friday at 12:00", "June 5 at 3pm"). Requires the user to have a timezone set.
-        time_delta: A relative duration from now (e.g. "2 hours", "30 minutes", "1 day"). Use this for relative reminders.
+        time: A specific date/time in the user's timezone. Pass the user's words directly — e.g. "tomorrow at 3pm", "Friday at 12:00", "31.5.2026 at 10:22", "next monday at 9am". Do NOT calculate durations — just pass the natural language time here. Dates with dots use day.month format (31.5 = May 31st). Dates with slashes default to month/day (5/6 = June 5th).
+        time_delta: A relative duration from now — e.g. "30 minutes", "2 hours". ONLY use this when the user says something like "remind me in 30 minutes" with no specific date/time.
     """
     # Absolute time mode
     if time:
         utc_offset = user_data.get_timezone(bong_tools.current_user_id)
         if utc_offset is None:
             return "The user hasn't set their timezone yet. Ask them for their timezone and use set_timezone to set it before setting absolute-time reminders. You can still use the time_delta parameter for relative reminders like 'in 2 hours'."
-        ts = reminders.parse_absolute_time(time, utc_offset)
+        try:
+            ts = reminders.parse_absolute_time(time, utc_offset)
+        except reminders.PastDateError as e:
+            return f"{e} Please choose a future time."
         if ts is None:
             return f"Could not understand the time '{time}'. Try formats like 'tomorrow at 3pm', 'Friday at 12:00', 'June 5 at 3pm', or 'next monday at 9am'."
         reminder = reminders.add_reminder(

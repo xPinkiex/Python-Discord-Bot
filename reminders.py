@@ -175,6 +175,11 @@ _MONTH_NAMES = {
 }
 
 
+class PastDateError(ValueError):
+    """Raised when a parsed date is in the past."""
+    pass
+
+
 def parse_absolute_time(text: str, utc_offset: Optional[float] = None) -> Optional[float]:
     """Parse an absolute date/time expression into a UTC timestamp.
 
@@ -275,16 +280,35 @@ def parse_absolute_time(text: str, utc_offset: Optional[float] = None) -> Option
             except ValueError:
                 pass
 
-    # "MM/DD/YYYY" or "MM-DD-YYYY" or "YYYY-MM-DD"
+    # Date format patterns — order matters! Longer/more-specific patterns must come
+    # before shorter ones so DD.MM.YYYY matches before DD.MM, etc.
     if target_date is None:
         date_patterns = [
-            (r'(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b', lambda m: (int(m.group(3)), int(m.group(1)), int(m.group(2)))),
-            (r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})\b', lambda m: (int(m.group(1)), int(m.group(2)), int(m.group(3)))),
+            (r'(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})\b', lambda m: None),  # disambiguated below
+            (r'(\d{4})[/\-](\d{1,2})[/\-](\d{1,2})\b', lambda m: (int(m.group(1)), int(m.group(2)), int(m.group(3)))),
+            (r'(\d{1,2})\.(\d{1,2})\.(\d{4})\b', lambda m: (int(m.group(3)), int(m.group(2)), int(m.group(1)))),
+            (r'(\d{1,2})\.(\d{1,2})(?!\.\d)\b', lambda m: (now_local.year, int(m.group(2)), int(m.group(1)))),
         ]
         for pattern, extractor in date_patterns:
             match = re.search(pattern, text)
             if match:
-                year, month, day = extractor(match)
+                # Ambiguous DD/MM/YYYY vs MM/DD/YYYY — use dot as day.month hint
+                if extractor is None:
+                    # Slash format: try to disambiguate
+                    a, b = int(match.group(1)), int(match.group(2))
+                    year = int(match.group(3))
+                    if a > 12:
+                        # a must be a day -> DD/MM/YYYY
+                        month, day = b, a
+                    elif b > 12:
+                        # b must be a day -> MM/DD/YYYY (standard US)
+                        month, day = a, b
+                    else:
+                        # Both could be month or day — default to MM/DD/YYYY
+                        month, day = a, b
+                    year, month, day = year, month, day
+                else:
+                    year, month, day = extractor(match)
                 try:
                     target_date = datetime(year, month, day).date()
                 except ValueError:
@@ -323,6 +347,6 @@ def parse_absolute_time(text: str, utc_offset: Optional[float] = None) -> Option
 
     # Must be in the future
     if ts <= datetime.utcnow().timestamp():
-        return None
+        raise PastDateError(f"That date ({local_dt.strftime('%Y-%m-%d %H:%M')}) is in the past.")
 
     return ts

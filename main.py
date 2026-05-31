@@ -95,9 +95,16 @@ async def reload_ext(ctx, util: str = "bong"):
         for channel_id, history in list(bong.chat_memories.items()):
             history.insert(0, f"System at {timestamp}: Bong was hot-reloaded with new code. Previous conversation context is preserved.")
         
-        await ctx.message.delete()
+        if not isinstance(ctx.channel, discord.DMChannel):
+            await ctx.message.delete()
     except commands.ExtensionNotLoaded:
         pass
+    except discord.HTTPException as e:
+        # 50003: Cannot execute action on DM channel — reload likely succeeded
+        # but a post-reload action (like voice status) failed because we're in a DM.
+        # Only surface the error in guild channels, not DMs.
+        if not isinstance(ctx.channel, discord.DMChannel):
+            await ctx.send(f"Error reloading extension: {e}")
     except Exception as e:
         await ctx.send(f"Error reloading extension: {e}")
 

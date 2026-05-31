@@ -3,7 +3,7 @@ import time
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
-from reminders import parse_absolute_time, parse_time_delta
+from reminders import parse_absolute_time, parse_time_delta, PastDateError
 
 
 class TestParseTimeDelta:
@@ -117,13 +117,37 @@ class TestParseAbsoluteTime:
         result = self._parse("sometime maybe", utc_offset=2.0)
         assert result is None
 
-    def test_past_date_returns_none(self):
-        result = self._parse("january 1 at 3pm", utc_offset=2.0)
-        assert result is None
+    def test_past_date_raises_error(self):
+        with pytest.raises(PastDateError):
+            self._parse("january 1 at 3pm", utc_offset=2.0)
 
     def test_negative_timezone_offset(self):
         result = self._parse("tomorrow at 3pm", utc_offset=-5.0)
         assert result is not None
         expected_local = datetime(2026, 6, 2, 15, 0, 0)
         expected_utc = expected_local + timedelta(hours=5.0)
+        assert abs(result - expected_utc.timestamp()) < 1
+
+    def test_day_dot_month_current_year(self):
+        # "12.10" = October 12 of current year (dot = day.month format)
+        result = self._parse("12.10 at 3pm", utc_offset=2.0)
+        assert result is not None
+        expected_local = datetime(2026, 10, 12, 15, 0, 0)
+        expected_utc = expected_local - timedelta(hours=2.0)
+        assert abs(result - expected_utc.timestamp()) < 1
+
+    def test_day_dot_month_dot_year(self):
+        # "10.7.2026" = July 10, 2026 (DD.MM.YYYY) — must be after our fixed "now" of June 1
+        result = self._parse("10.7.2026 at 9am", utc_offset=2.0)
+        assert result is not None
+        expected_local = datetime(2026, 7, 10, 9, 0, 0)
+        expected_utc = expected_local - timedelta(hours=2.0)
+        assert abs(result - expected_utc.timestamp()) < 1
+
+    def test_day_dot_month_with_time_no_at(self):
+        # "5.7 at 15:00" (July 5 at 3pm)
+        result = self._parse("5.7 at 15:00", utc_offset=2.0)
+        assert result is not None
+        expected_local = datetime(2026, 7, 5, 15, 0, 0)
+        expected_utc = expected_local - timedelta(hours=2.0)
         assert abs(result - expected_utc.timestamp()) < 1
