@@ -1,0 +1,23 @@
+Bong Bot Todo
+============
+
+[x] Voice channel status (now playing)
+[x] Song queue
+[x] Timezone storage
+[x] URL summarization
+[x] Bot stats command
+[x] Streaming + message splitting
+[x] Loop/shuffle mutual exclusion
+[x] Conversation summarization
+[x] Debounce song stats saves (60s batch)
+[x] Code review fixes (double-invocation, dead code, asyncio deprecation)
+[x] Retry logic on LLM timeouts (2 retries, 2s/4s backoff)
+[x] Shutdown clears VC status
+
+[x] Reminders at specific day/time — timezone-aware, ask for timezone if not set
+[ ] Bong-controlled shuffle — Bong picks next song based on conversation context instead of random library pick
+[ ] Playlist support — save/load named playlists from JSON
+[x] Admin commands — @memories to inspect user memories, @forget_user to wipe data
+[x] Fix duplicate/triple response bug — Discord gateway can deliver on_message events multiple times on reconnect/resume
+[x] Remove ?list= from YouTube URLs in download_music to prevent playlist downloads
+[ ] Rate limiting on tools — prevent spamming web_search, download_music, etc.

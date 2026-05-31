@@ -7,6 +7,7 @@
 import json
 import asyncio
 from datetime import datetime, timedelta
+from typing import Optional
 from pathlib import Path
 from dataclasses import dataclass, asdict
 
@@ -146,3 +147,182 @@ def parse_time_delta(text: str) -> float | None:
             total += float(value) * units[unit]
 
     return total if total > 0 else None
+
+
+_DAY_NAMES = {
+    "monday": 0, "mon": 0,
+    "tuesday": 1, "tue": 1, "tues": 1,
+    "wednesday": 2, "wed": 2,
+    "thursday": 3, "thu": 3, "thur": 3, "thurs": 3,
+    "friday": 4, "fri": 4,
+    "saturday": 5, "sat": 5,
+    "sunday": 6, "sun": 6,
+}
+
+_MONTH_NAMES = {
+    "january": 1, "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3, "mar": 3,
+    "april": 4, "apr": 4,
+    "may": 5,
+    "june": 6, "jun": 6,
+    "july": 7, "jul": 7,
+    "august": 8, "aug": 8,
+    "september": 9, "sep": 9, "sept": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+
+
+def parse_absolute_time(text: str, utc_offset: Optional[float] = None) -> Optional[float]:
+    """Parse an absolute date/time expression into a UTC timestamp.
+
+    Accepts expressions like:
+      - "tomorrow at 3pm"
+      - "friday at 12:00"
+      - "next monday at 9am"
+      - "june 5 at 3pm"
+      - "6/5/2026 at 15:00"
+      - "2026-06-05 15:00"
+      - "tomorrow 8am"
+      - "today at 5pm"
+
+    If utc_offset is provided, the input time is interpreted in that timezone.
+    If None, UTC is assumed.
+
+    Returns the UTC timestamp, or None if the text can't be parsed.
+    """
+    import re
+
+    text = text.lower().strip().rstrip(".")
+
+    # Determine the user's "now" in their timezone
+    if utc_offset is not None:
+        now_local = datetime.utcnow() + timedelta(hours=utc_offset)
+    else:
+        now_local = datetime.utcnow()
+
+    # Parse the time portion — supports "3pm", "3:00pm", "15:00", "3:00 pm", "12am", etc.
+    time_patterns = [
+        r'(?:(?:at\s+)?|^)(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b',
+        r'(?:(?:at\s+)?|^)(\d{1,2}):(\d{2})\b',
+    ]
+
+    hour = None
+    minute = 0
+
+    for pattern in time_patterns:
+        match = re.search(pattern, text)
+        if match and hour is None:
+            groups = match.groups()
+            if len(groups) == 3 and groups[2] in ("am", "pm"):
+                hour = int(groups[0])
+                minute = int(groups[1]) if groups[1] else 0
+                if groups[2] == "pm" and hour != 12:
+                    hour += 12
+                elif groups[2] == "am" and hour == 12:
+                    hour = 0
+            elif len(groups) == 2 and groups[1] is not None:
+                hour = int(groups[0])
+                minute = int(groups[1])
+            break
+
+    # Determine the date
+    target_date = None
+
+    # "today"
+    if re.search(r'\btoday\b', text):
+        target_date = now_local.date()
+
+    # "tomorrow"
+    elif re.search(r'\btomorrow\b', text):
+        target_date = now_local.date() + timedelta(days=1)
+
+    # "next <dayname>"
+    next_match = re.search(r'\bnext\s+(\w+)\b', text)
+    if next_match and target_date is None:
+        day_name = next_match.group(1)
+        if day_name in _DAY_NAMES:
+            target_weekday = _DAY_NAMES[day_name]
+            days_ahead = target_weekday - now_local.weekday()
+            if days_ahead <= 0:
+                days_ahead += 7
+            target_date = now_local.date() + timedelta(days=days_ahead)
+
+    # "<dayname>" without "next" — means the next occurrence
+    if target_date is None:
+        for name, weekday in _DAY_NAMES.items():
+            if re.search(rf'\b{name}\b', text) and not re.search(r'\bnext\s', text):
+                days_ahead = weekday - now_local.weekday()
+                if days_ahead <= 0:
+                    days_ahead += 7
+                target_date = now_local.date() + timedelta(days=days_ahead)
+                break
+
+    # "<month> <day>" or "<month> <day> <year>" — e.g. "june 5" or "june 5 2026"
+    if target_date is None:
+        month_match = re.search(
+            r'\b(' + '|'.join(_MONTH_NAMES.keys()) + r')\s+(\d{1,2})(?:\s*,?\s*(\d{4}))?\b',
+            text
+        )
+        if month_match:
+            month = _MONTH_NAMES[month_match.group(1)]
+            day = int(month_match.group(2))
+            year = int(month_match.group(3)) if month_match.group(3) else now_local.year
+            try:
+                target_date = datetime(year, month, day).date()
+            except ValueError:
+                pass
+
+    # "MM/DD/YYYY" or "MM-DD-YYYY" or "YYYY-MM-DD"
+    if target_date is None:
+        date_patterns = [
+            (r'(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b', lambda m: (int(m.group(3)), int(m.group(1)), int(m.group(2)))),
+            (r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})\b', lambda m: (int(m.group(1)), int(m.group(2)), int(m.group(3)))),
+        ]
+        for pattern, extractor in date_patterns:
+            match = re.search(pattern, text)
+            if match:
+                year, month, day = extractor(match)
+                try:
+                    target_date = datetime(year, month, day).date()
+                except ValueError:
+                    pass
+                break
+
+    # Just a time with no date = today (or tomorrow if the time has already passed)
+    if target_date is None and hour is not None:
+        target_date = now_local.date()
+        tentative = datetime(target_date.year, target_date.month, target_date.day, hour, minute)
+        if tentative <= now_local:
+            target_date = target_date + timedelta(days=1)
+
+    # Can't parse
+    if target_date is None and hour is None:
+        return None
+    if target_date is None:
+        return None
+
+    # Default time to midnight if only a date was given
+    if hour is None:
+        hour = 9  # sensible default: 9am
+
+    # Build the local datetime and convert to UTC
+    try:
+        local_dt = datetime(target_date.year, target_date.month, target_date.day, hour, minute)
+    except ValueError:
+        return None
+
+    if utc_offset is not None:
+        utc_dt = local_dt - timedelta(hours=utc_offset)
+    else:
+        utc_dt = local_dt
+
+    ts = utc_dt.timestamp()
+
+    # Must be in the future
+    if ts <= datetime.utcnow().timestamp():
+        return None
+
+    return ts

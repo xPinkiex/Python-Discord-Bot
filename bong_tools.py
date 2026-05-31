@@ -946,24 +946,56 @@ def forget_memory(query: str) -> str:
         return f"Failed to forget memory: {e}"
 
 @tool
-def set_reminder(message: str, time_delta: str) -> str:
-    """Set a reminder for the current user. Bong will DM them when the time is up.
+def set_reminder(message: str, time: str = "", time_delta: str = "") -> str:
+    """Set a reminder for the current user. Bong will DM them when the time is up. Supports both absolute times and relative durations.
+
+    For absolute times, use the 'time' parameter with natural language like "tomorrow at 3pm", "Friday at 12:00", "June 5 at 3pm", "next monday at 9am". Requires the user to have a timezone set — if they don't, ask them to set one using set_timezone first.
+
+    For relative durations, use the 'time_delta' parameter like "2 hours", "30 minutes", "1 day".
+
+    Do NOT use both parameters at the same time — pick one.
     Args:
         message: What to remind the user about (e.g. "feed the cat", "take out the trash").
-        time_delta: When to remind, as a human-readable duration (e.g. "2 hours", "30 minutes", "1 day", "1 hour 30 minutes").
+        time: An absolute date/time for the reminder in the user's timezone (e.g. "tomorrow at 3pm", "Friday at 12:00", "June 5 at 3pm"). Requires the user to have a timezone set.
+        time_delta: A relative duration from now (e.g. "2 hours", "30 minutes", "1 day"). Use this for relative reminders.
     """
-    seconds = reminders.parse_time_delta(time_delta)
-    if seconds is None:
-        return f"Could not understand the time '{time_delta}'. Use formats like '30 minutes', '2 hours', '1 day'."
-    due_at = datetime.now().timestamp() + seconds
-    reminder = reminders.add_reminder(
-        user_id=bong_tools.current_user_id,
-        username=bong_tools.current_username or "",
-        message=message,
-        due_at=due_at,
-    )
-    when = reminders._format_delta(seconds)
-    return f"Reminder set: '{message}' in {when}."
+    # Absolute time mode
+    if time:
+        utc_offset = user_data.get_timezone(bong_tools.current_user_id)
+        if utc_offset is None:
+            return "The user hasn't set their timezone yet. Ask them for their timezone and use set_timezone to set it before setting absolute-time reminders. You can still use the time_delta parameter for relative reminders like 'in 2 hours'."
+        ts = reminders.parse_absolute_time(time, utc_offset)
+        if ts is None:
+            return f"Could not understand the time '{time}'. Try formats like 'tomorrow at 3pm', 'Friday at 12:00', 'June 5 at 3pm', or 'next monday at 9am'."
+        reminder = reminders.add_reminder(
+            user_id=bong_tools.current_user_id,
+            username=bong_tools.current_username or "",
+            message=message,
+            due_at=ts,
+        )
+        when_local = datetime.fromtimestamp(ts + utc_offset * 3600).strftime("%H:%M on %Y-%m-%d")
+        sign = "+" if utc_offset >= 0 else "-"
+        hours = int(abs(utc_offset))
+        minutes = int((abs(utc_offset) - hours) * 60)
+        tz_str = f"UTC{sign}{hours}" + (f":{minutes:02d}" if minutes else "")
+        return f"Reminder set: '{message}' at {when_local} ({tz_str})."
+
+    # Relative time mode
+    if time_delta:
+        seconds = reminders.parse_time_delta(time_delta)
+        if seconds is None:
+            return f"Could not understand the time '{time_delta}'. Use formats like '30 minutes', '2 hours', '1 day'."
+        due_at = datetime.now().timestamp() + seconds
+        reminder = reminders.add_reminder(
+            user_id=bong_tools.current_user_id,
+            username=bong_tools.current_username or "",
+            message=message,
+            due_at=due_at,
+        )
+        when = reminders._format_delta(seconds)
+        return f"Reminder set: '{message}' in {when}."
+
+    return "Please provide either a 'time' (absolute, e.g. 'tomorrow at 3pm') or 'time_delta' (relative, e.g. '2 hours') for when to remind."
 
 
 @tool
