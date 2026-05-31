@@ -865,6 +865,8 @@ class BongCog(commands.Cog):
     
     def __init__(self, bot):
         self.bot = bot
+        self._processed_ids: set[int] = set()
+        self._user_cooldowns: dict[int, float] = {}
         # Preload channel history on startup so Bong has context immediately
         self.bot.loop.create_task(self._preload_channel())
         # Start the reminder checker background task
@@ -940,6 +942,30 @@ class BongCog(commands.Cog):
         # Ignore own messages
         if message.author == self.bot.user:
             return
+
+        # Deduplication: Discord can deliver the same gateway event multiple times
+        # (e.g. on reconnect/resume), which would cause duplicate LLM invocations.
+        # Since this check-and-add is synchronous (no await), it's atomic in the
+        # asyncio event loop — no other coroutine can interleave between the check
+        # and the add, so there's no race condition.
+        if message.id in self._processed_ids:
+            return
+        self._processed_ids.add(message.id)
+        # Prevent unbounded memory growth — keep only recent IDs
+        # (Discord snowflakes are monotonically increasing, so we keep the highest)
+        if len(self._processed_ids) > 2000:
+            self._processed_ids = set(sorted(self._processed_ids)[-1000:])
+
+        # Cooldown: regular users must wait 60s between Bong responses.
+        # Admin and authorized users bypass this.
+        if not user_data.is_authorized(message.author.id):
+            now = datetime.now().timestamp()
+            last = self._user_cooldowns.get(message.author.id, 0)
+            if now - last < 60:
+                remaining = int(60 - (now - last))
+                await message.channel.send(f"Slow down! Try again in {remaining}s.", delete_after=5)
+                return
+            self._user_cooldowns[message.author.id] = now
 
         # Handle DMs — check approval before responding
         if isinstance(message.channel, discord.DMChannel):
@@ -1085,6 +1111,50 @@ class BongCog(commands.Cog):
                 history.append(f"{msg.author.display_name} at {msg.created_at.strftime('%H:%M')}: {msg.content}")
             await ctx.send(f"Bong is now active in this channel! (ID: {ctx.channel.id})")
             debug.log("AI", history)
+
+    @commands.command(name="memories", help="Search or list Bong's long-term memories")
+    async def memories(self, ctx, *, query: str = ""):
+        """Search or list Bong's long-term memories. Admin only.
+        Use: @memories <query> to search, @memories with no args to list all.
+        """
+        if not user_data.is_admin(ctx.author.id):
+            await ctx.send("Only admins can use this command.")
+            return
+        from bong_utilities.manage_memory import search_memories, list_memories
+        await asyncio.to_thread(ctx.typing().__aenter__) if hasattr(ctx, 'typing') else None
+        if query:
+            result = await asyncio.to_thread(search_memories, query)
+        else:
+            result = await asyncio.to_thread(list_memories)
+        if len(result) > 2000:
+            for chunk in [result[i:i+2000] for i in range(0, len(result), 2000)]:
+                await ctx.send(chunk)
+        else:
+            await ctx.send(result)
+
+    @commands.command(name="forget_user", help="Delete all memories for a user")
+    async def forget_user_cmd(self, ctx, user_id: int):
+        """Delete all memories belonging to a specific user. Admin only.
+        Use: @forget_user <user_id>
+        """
+        if not user_data.is_admin(ctx.author.id):
+            await ctx.send("Only admins can use this command.")
+            return
+        from bong_utilities.manage_memory import forget_user
+        result = await asyncio.to_thread(forget_user, user_id)
+        await ctx.send(result)
+
+    @commands.command(name="delete_memory", help="Delete memories matching a query")
+    async def delete_memory_cmd(self, ctx, *, query: str):
+        """Delete memories matching a search query. Admin only.
+        Use: @delete_memory <search query>
+        """
+        if not user_data.is_admin(ctx.author.id):
+            await ctx.send("Only admins can use this command.")
+            return
+        from bong_utilities.manage_memory import delete_memory_by_query
+        result = await asyncio.to_thread(delete_memory_by_query, query)
+        await ctx.send(result)
 
 async def setup(bot):
     """Entry point for discord.py to load this cog."""

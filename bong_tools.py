@@ -14,6 +14,7 @@ import random
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 
 # DuckDuckGo search client
 from ddgs import DDGS
@@ -511,6 +512,15 @@ def download_music(query: str) -> str:
     # Determine if the query is a direct URL or a search term
     is_url = "youtube.com" in query or "youtu.be" in query
     url = query if is_url else ""
+
+    # Strip playlist parameters from YouTube URLs to avoid downloading entire playlists
+    if url:
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        if "list" in qs:
+            del qs["list"]
+            parsed = parsed._replace(query=urlencode(qs, doseq=True))
+            url = urlunparse(parsed)
 
     # Check if a similar song already exists in the library (fuzzy match by name)
     query_lower = query.lower()
