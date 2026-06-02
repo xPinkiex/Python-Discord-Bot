@@ -29,6 +29,8 @@ import debug
 import user_data
 
 _LOG_FILE = Path(__file__).parent / "logs" / "voice_commands.log"
+_DEBUG_WAV_DIR = Path(__file__).parent / "logs" / "voice_debug"
+_MAX_DEBUG_WAVS = 10
 
 _model_lock = Lock()
 
@@ -53,6 +55,8 @@ def _load_models():
                 device="cpu",
                 compute_type="int8",
                 download_root=_WHISPER_DOWNLOAD_ROOT,
+                cpu_threads=4,
+                num_workers=1,
             )
             _vlog("Whisper model loaded")
         if _oww_model is None:
@@ -110,8 +114,43 @@ def _vlog(msg: str):
             f.write(f"[{ts}] {msg}\n")
 
 
+def _write_debug_wav(pcm_48k_stereo: bytes, pcm_16k_mono: bytes, user_id: int) -> None:
+    if not debug.is_debug():
+        return
+    try:
+        _DEBUG_WAV_DIR.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%H%M%S")
+        raw_path = _DEBUG_WAV_DIR / f"raw_{ts}_{user_id}.wav"
+        rst_path = _DEBUG_WAV_DIR / f"resampled_{ts}_{user_id}.wav"
+
+        with wave.open(str(raw_path), "wb") as wf:
+            wf.setnchannels(CHANNELS)
+            wf.setsampwidth(SAMPLE_WIDTH)
+            wf.setframerate(SAMPLE_RATE)
+            wf.writeframes(pcm_48k_stereo)
+
+        with wave.open(str(rst_path), "wb") as wf:
+            wf.setnchannels(WHISPER_CHANNELS)
+            wf.setsampwidth(SAMPLE_WIDTH)
+            wf.setframerate(WHISPER_SAMPLE_RATE)
+            wf.writeframes(pcm_16k_mono)
+
+        _vlog(f"[debug_wav] wrote {raw_path.name} + {rst_path.name}")
+
+        existing_raw = sorted(_DEBUG_WAV_DIR.glob("raw_*.wav"))
+        existing_rst = sorted(_DEBUG_WAV_DIR.glob("resampled_*.wav"))
+        while len(existing_raw) > _MAX_DEBUG_WAVS:
+            oldest = existing_raw.pop(0)
+            oldest.unlink(missing_ok=True)
+        while len(existing_rst) > _MAX_DEBUG_WAVS:
+            oldest = existing_rst.pop(0)
+            oldest.unlink(missing_ok=True)
+    except Exception as e:
+        _vlog(f"[debug_wav] error: {e}")
+
+
 from discord.ext.voice_recv import AudioSink, VoiceData, VoiceRecvClient
-from discord.ext.voice_recv.rtp import FakePacket
+from discord.ext.voice_recv.rtp import FakePacket, SilencePacket
 
 import logging as _logging
 _logging.getLogger("discord.ext.voice_recv.reader").setLevel(_logging.WARNING)
@@ -126,6 +165,8 @@ FRAME_SIZE = SAMPLE_RATE * SAMPLE_WIDTH * CHANNELS // 50  # Bytes per 20ms frame
 SILENCE_DURATION = 1.5   # Seconds of silence to mark end of utterance
 MIN_UTTERANCE_DURATION = 0.5  # Minimum seconds to consider an utterance
 MAX_UTTERANCE_DURATION = 30.0  # Maximum seconds before forcing transcription
+
+PEAK_THRESHOLD = 12000    # DAVE stale-key garbage peaks above this; real speech rarely exceeds it
 
 WAKE_WORD = "hey bong"
 # openWakeWord processes 80ms frames at 16kHz mono = 1280 samples
@@ -186,6 +227,10 @@ class BongVoiceSink(AudioSink):
         if not pcm_data:
             return
 
+        # SilencePacket = synthetic silence from SilenceGenerator — skip entirely
+        if isinstance(data.packet, SilencePacket):
+            return
+
         # DAVE-corrupted frames (flagged by venv patches) — skip entirely
         ext = getattr(data.packet, 'extension_data', None)
         if isinstance(ext, dict) and ext.get('_voice_recv_needs_dave_inner_decrypt'):
@@ -193,10 +238,10 @@ class BongVoiceSink(AudioSink):
 
         # Garbage detection: DAVE epoch transitions can produce frames where
         # inner decrypt "succeeded" with stale keys. Opus decodes these into
-        # noise with extreme peak values. Real speech peaks rarely exceed 15000.
+        # noise with extreme peak values. Real speech peaks rarely exceed PEAK_THRESHOLD.
         try:
             audio_array = np.frombuffer(pcm_data, dtype=np.int16)
-            if np.abs(audio_array).max() > 15000:
+            if np.abs(audio_array).max() > PEAK_THRESHOLD:
                 return
         except Exception:
             return
@@ -222,6 +267,14 @@ class BongVoiceSink(AudioSink):
                         if not self._activated.get(user_id, False):
                             _vlog(f"[write] user={user_id} WAKE WORD DETECTED (score={score:.2f})")
                             self._activated[user_id] = True
+                            if _oww_model is not None:
+                                try:
+                                    _oww_model.reset()
+                                    if hasattr(_oww_model, 'vad') and hasattr(_oww_model.vad, 'reset_states'):
+                                        _oww_model.vad.reset_states()
+                                    _vlog("[write] Reset openWakeWord after detection")
+                                except Exception as e:
+                                    _vlog(f"[write] Failed to reset openWakeWord: {e}")
                 except Exception as e:
                     _vlog(f"[write] openWakeWord error: {e}")
 
@@ -283,7 +336,7 @@ class BongVoiceSink(AudioSink):
                         continue
 
                     _vlog(f"[silence_checker] Transcribing utterance from {user_id} ({duration:.1f}s)")
-                    text = await asyncio.to_thread(self._transcribe, pcm_data)
+                    text = await asyncio.to_thread(self._transcribe, pcm_data, user_id)
                     if text:
                         _vlog(f"[silence_checker] Transcribed ({user_id}): '{text}'")
                         await self._handle_transcription(user_id, text)
@@ -297,10 +350,11 @@ class BongVoiceSink(AudioSink):
         mono = samples[::step, :].mean(axis=1).astype(np.int16)
         return mono.tobytes()
 
-    def _transcribe(self, pcm_data: bytes) -> str:
+    def _transcribe(self, pcm_data: bytes, user_id: int = 0) -> str:
         """Transcribe PCM audio using faster-whisper."""
         try:
             resampled = self._resample_to_whisper_format(pcm_data)
+            _write_debug_wav(pcm_data, resampled, user_id)
 
             wav_buffer = io.BytesIO()
             with wave.open(wav_buffer, "wb") as wf:

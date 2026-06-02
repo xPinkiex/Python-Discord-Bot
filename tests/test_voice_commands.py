@@ -3,7 +3,11 @@ import numpy as np
 import struct
 import wave
 import io
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
+
+from discord.ext.voice_recv.rtp import SilencePacket, FakePacket
 
 import voice_commands
 from voice_commands import (
@@ -16,6 +20,7 @@ from voice_commands import (
     WAKE_WORD,
     FRAME_SIZE,
     OWW_FRAME_BYTES,
+    PEAK_THRESHOLD,
 )
 
 
@@ -397,3 +402,245 @@ class TestWaveOutput:
             assert wf.getframerate() == WHISPER_SAMPLE_RATE
             frames = wf.getnframes()
             assert abs(frames - WHISPER_SAMPLE_RATE) <= 2
+
+
+class TestSilencePacketHandling:
+
+    def _make_zero_pcm(self) -> bytes:
+        frame = np.zeros(SAMPLE_RATE // 50 * CHANNELS, dtype=np.int16)
+        return frame.tobytes()
+
+    def test_silence_packet_skipped(self):
+        sink = BongVoiceSink(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        user = MagicMock()
+        user.id = 123
+        user.bot = False
+        data = MagicMock()
+        data.pcm = self._make_zero_pcm()
+        data.packet = SilencePacket(ssrc=1, timestamp=100)
+
+        sink.write(user, data)
+        assert 123 not in sink._buffers or len(sink._buffers[123]) == 0
+
+    def test_silence_packet_with_activated_user(self):
+        sink = BongVoiceSink(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        user = MagicMock()
+        user.id = 123
+        user.bot = False
+        _activate_sink_user(sink, 123)
+
+        data = MagicMock()
+        data.pcm = self._make_zero_pcm()
+        data.packet = SilencePacket(ssrc=1, timestamp=100)
+
+        sink.write(user, data)
+        assert len(sink._buffers[123]) == 0
+
+    def test_silence_packet_not_fed_to_oww(self):
+        sink = BongVoiceSink(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        user = MagicMock()
+        user.id = 123
+        user.bot = False
+        data = MagicMock()
+        data.pcm = self._make_zero_pcm()
+        data.packet = SilencePacket(ssrc=1, timestamp=100)
+
+        with patch('voice_commands._get_oww_model') as mock_oww_getter:
+            mock_oww = MagicMock()
+            mock_oww_getter.return_value = mock_oww
+            sink.write(user, data)
+            mock_oww.predict.assert_not_called()
+
+
+class TestPeakThreshold:
+
+    def _make_frame_with_peak(self, peak_value: int) -> bytes:
+        frame = np.zeros(SAMPLE_RATE // 50 * CHANNELS, dtype=np.int16)
+        frame[0] = peak_value
+        frame[1] = -peak_value
+        return frame.tobytes()
+
+    def test_extreme_peak_above_threshold_rejected(self):
+        sink = BongVoiceSink(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        user = MagicMock()
+        user.id = 123
+        user.bot = False
+        _activate_sink_user(sink, 123)
+        data = MagicMock()
+        data.pcm = self._make_frame_with_peak(PEAK_THRESHOLD + 1000)
+        data.packet = MagicMock()
+        data.packet.extension_data = {}
+
+        sink.write(user, data)
+        assert 123 not in sink._buffers or len(sink._buffers[123]) == 0
+
+    def test_peak_just_below_threshold(self):
+        sink = BongVoiceSink(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        user = MagicMock()
+        user.id = 123
+        user.bot = False
+        _activate_sink_user(sink, 123)
+        data = MagicMock()
+        data.pcm = self._make_frame_with_peak(PEAK_THRESHOLD - 1000)
+        data.packet = MagicMock()
+        data.packet.extension_data = {}
+
+        sink.write(user, data)
+        assert 123 in sink._buffers
+        assert len(sink._buffers[123]) > 0
+
+    def test_peak_just_above_threshold(self):
+        sink = BongVoiceSink(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        user = MagicMock()
+        user.id = 123
+        user.bot = False
+        _activate_sink_user(sink, 123)
+        data = MagicMock()
+        data.pcm = self._make_frame_with_peak(PEAK_THRESHOLD + 1)
+        data.packet = MagicMock()
+        data.packet.extension_data = {}
+
+        sink.write(user, data)
+        assert 123 not in sink._buffers or len(sink._buffers[123]) == 0
+
+
+class TestFakePacketHandling:
+
+    def _make_speech_frame(self, rms_value: int = 2000) -> bytes:
+        frame = np.full(SAMPLE_RATE // 50 * CHANNELS, rms_value, dtype=np.int16)
+        return frame.tobytes()
+
+    def test_fake_packet_skips_oww(self):
+        sink = BongVoiceSink(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        user = MagicMock()
+        user.id = 123
+        user.bot = False
+        data = MagicMock()
+        data.pcm = self._make_speech_frame(2000)
+        data.packet = FakePacket(ssrc=1, sequence=1, timestamp=100)
+
+        with patch('voice_commands._get_oww_model') as mock_oww_getter:
+            mock_oww = MagicMock()
+            mock_oww_getter.return_value = mock_oww
+            sink.write(user, data)
+            mock_oww.predict.assert_not_called()
+
+    def test_fake_packet_not_fed_to_oww_buffer(self):
+        sink = BongVoiceSink(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        user = MagicMock()
+        user.id = 123
+        user.bot = False
+        data = MagicMock()
+        data.pcm = self._make_speech_frame(2000)
+        data.packet = FakePacket(ssrc=1, sequence=1, timestamp=100)
+
+        sink.write(user, data)
+        assert 123 not in sink._oww_buffers or len(sink._oww_buffers[123]) == 0
+
+    def test_fake_packet_buffered_when_activated(self):
+        sink = BongVoiceSink(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        user = MagicMock()
+        user.id = 123
+        user.bot = False
+        _activate_sink_user(sink, 123)
+        data = MagicMock()
+        data.pcm = self._make_speech_frame(2000)
+        data.packet = FakePacket(ssrc=1, sequence=1, timestamp=100)
+
+        sink.write(user, data)
+        assert 123 in sink._buffers
+        assert len(sink._buffers[123]) > 0
+
+
+class TestDebugWavOutput:
+
+    def _make_stereo_pcm(self, duration_s: float, frequency: int = 440) -> bytes:
+        num_samples = int(SAMPLE_RATE * duration_s)
+        t = np.arange(num_samples, dtype=np.float64) / SAMPLE_RATE
+        signal = (np.sin(2 * np.pi * frequency * t) * 16000).astype(np.int16)
+        stereo = np.column_stack((signal, signal))
+        return stereo.tobytes()
+
+    def test_write_debug_wav_creates_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('voice_commands._DEBUG_WAV_DIR', Path(tmpdir)):
+                with patch('voice_commands.debug.is_debug', return_value=True):
+                    stereo = self._make_stereo_pcm(0.5)
+                    mono_samples = np.frombuffer(stereo, dtype=np.int16).reshape(-1, 2)
+                    mono = mono_samples[::3, :].mean(axis=1).astype(np.int16)
+                    mono_bytes = mono.tobytes()
+
+                    voice_commands._write_debug_wav(stereo, mono_bytes, user_id=999)
+
+                    raw_files = list(Path(tmpdir).glob("raw_*.wav"))
+                    rst_files = list(Path(tmpdir).glob("resampled_*.wav"))
+                    assert len(raw_files) == 1
+                    assert len(rst_files) == 1
+
+    def test_debug_wav_raw_format(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('voice_commands._DEBUG_WAV_DIR', Path(tmpdir)):
+                with patch('voice_commands.debug.is_debug', return_value=True):
+                    stereo = self._make_stereo_pcm(0.5)
+                    mono_samples = np.frombuffer(stereo, dtype=np.int16).reshape(-1, 2)
+                    mono = mono_samples[::3, :].mean(axis=1).astype(np.int16)
+                    mono_bytes = mono.tobytes()
+
+                    voice_commands._write_debug_wav(stereo, mono_bytes, user_id=999)
+
+                    raw_path = list(Path(tmpdir).glob("raw_*.wav"))[0]
+                    with wave.open(str(raw_path), "rb") as wf:
+                        assert wf.getnchannels() == CHANNELS
+                        assert wf.getsampwidth() == SAMPLE_WIDTH
+                        assert wf.getframerate() == SAMPLE_RATE
+
+    def test_debug_wav_resampled_format(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('voice_commands._DEBUG_WAV_DIR', Path(tmpdir)):
+                with patch('voice_commands.debug.is_debug', return_value=True):
+                    stereo = self._make_stereo_pcm(0.5)
+                    mono_samples = np.frombuffer(stereo, dtype=np.int16).reshape(-1, 2)
+                    mono = mono_samples[::3, :].mean(axis=1).astype(np.int16)
+                    mono_bytes = mono.tobytes()
+
+                    voice_commands._write_debug_wav(stereo, mono_bytes, user_id=999)
+
+                    rst_path = list(Path(tmpdir).glob("resampled_*.wav"))[0]
+                    with wave.open(str(rst_path), "rb") as wf:
+                        assert wf.getnchannels() == WHISPER_CHANNELS
+                        assert wf.getsampwidth() == SAMPLE_WIDTH
+                        assert wf.getframerate() == WHISPER_SAMPLE_RATE
+
+    def test_debug_wav_skipped_when_not_debug(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('voice_commands._DEBUG_WAV_DIR', Path(tmpdir)):
+                with patch('voice_commands.debug.is_debug', return_value=False):
+                    stereo = self._make_stereo_pcm(0.5)
+                    mono_samples = np.frombuffer(stereo, dtype=np.int16).reshape(-1, 2)
+                    mono = mono_samples[::3, :].mean(axis=1).astype(np.int16)
+                    mono_bytes = mono.tobytes()
+
+                    voice_commands._write_debug_wav(stereo, mono_bytes, user_id=999)
+
+                    raw_files = list(Path(tmpdir).glob("raw_*.wav"))
+                    rst_files = list(Path(tmpdir).glob("resampled_*.wav"))
+                    assert len(raw_files) == 0
+                    assert len(rst_files) == 0
+
+    def test_debug_wav_max_files_pruned(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('voice_commands._DEBUG_WAV_DIR', Path(tmpdir)):
+                with patch('voice_commands.debug.is_debug', return_value=True):
+                    max_wavs = voice_commands._MAX_DEBUG_WAVS
+                    stereo = self._make_stereo_pcm(0.1)
+                    mono_samples = np.frombuffer(stereo, dtype=np.int16).reshape(-1, 2)
+                    mono = mono_samples[::3, :].mean(axis=1).astype(np.int16)
+                    mono_bytes = mono.tobytes()
+
+                    for i in range(max_wavs + 5):
+                        voice_commands._write_debug_wav(stereo, mono_bytes, user_id=i)
+
+                    raw_files = sorted(Path(tmpdir).glob("raw_*.wav"))
+                    rst_files = sorted(Path(tmpdir).glob("resampled_*.wav"))
+                    assert len(raw_files) <= max_wavs
+                    assert len(rst_files) <= max_wavs
