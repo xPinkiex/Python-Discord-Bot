@@ -8,6 +8,7 @@ from langchain_ollama.chat_models import ChatOllama
 from langchain_core.messages import HumanMessage
 from ddgs import DDGS
 import bong_tools
+import bong_memory_helpers
 
 
 _SUMMARIZE_PROMPT = (
@@ -102,7 +103,7 @@ def summarize_url(url: str) -> str:
 
     try:
         response = _SUMMARIZE_MODEL.invoke([HumanMessage(content=_SUMMARIZE_PROMPT.format(content=text))])
-        summary = bong_tools._extract_response_text(response).strip()
+        summary = bong_memory_helpers._extract_response_text(response).strip()
     except Exception as e:
         return f"Fetched the page but couldn't summarize it: {e}"
 

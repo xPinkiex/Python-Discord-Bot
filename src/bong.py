@@ -33,6 +33,8 @@ from langchain_ollama.chat_models import ChatOllama
 from langchain_core.messages import HumanMessage, ToolMessage
 
 import bong_tools
+import bong_song_stats
+import bong_memory_helpers
 import debug
 import dm_approval
 import reminders
@@ -234,7 +236,7 @@ def build_system_prompt(message, history, voice_status, attachment_desc, image_a
     history_str = "\n".join(history)
     user_msg = message.content.replace("\n", ". ")
     # Retrieve relevant memories based on the user's message and display name
-    memories_str = bong_tools.retrieve_memories(f"{message.author.display_name}: {user_msg}", username=message.author.display_name, user_id=message.author.id)
+    memories_str = bong_memory_helpers.retrieve_memories(f"{message.author.display_name}: {user_msg}", username=message.author.display_name, user_id=message.author.id)
 
     # Build the reply context block if the user is replying to another message
     replied_content = replied_to.content.replace("\n", ". ") if replied else ""
@@ -970,7 +972,7 @@ async def process_voice_command(bot, guild, channel, user_id: int, username: str
             voice_status_str += "\nVoice command listener is ACTIVE — listening for 'hey bong' wake word."
 
         # Build the system prompt using a synthetic approach
-        memories_str = bong_tools.retrieve_memories(f"{username}: {text}", username=username, user_id=user_id)
+        memories_str = bong_memory_helpers.retrieve_memories(f"{username}: {text}", username=username, user_id=user_id)
         summaries = channel_summaries.get(channel.id, [])
         summaries_str = ""
         if summaries:
@@ -1067,13 +1069,13 @@ class BongCog(commands.Cog):
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
             await asyncio.sleep(60)
-            if bong_tools._song_stats_dirty:
-                bong_tools._save_song_stats()
+            if bong_song_stats._song_stats_dirty:
+                bong_song_stats._save_song_stats()
 
     async def cog_unload(self):
         """Flush song stats to disk when the cog is unloaded (shutdown/reload)."""
-        if bong_tools._song_stats_dirty:
-            bong_tools._save_song_stats()
+        if bong_song_stats._song_stats_dirty:
+            bong_song_stats._save_song_stats()
         self.reminder_task.cancel()
         self.song_stats_task.cancel()
     

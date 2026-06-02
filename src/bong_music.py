@@ -12,6 +12,7 @@ from langchain_core.tools import tool
 from ddgs import DDGS
 from yt_dlp import YoutubeDL
 import bong_tools
+import bong_song_stats
 import debug
 
 
@@ -156,7 +157,7 @@ def play_audio(index: int = -1, name: str = "") -> str:
             return f"Index {index} out of range. Use list_music or search_music to find the right track (0-{len(files)-1})."
         track_path = str(files[index])
         track_name = files[index].stem
-    bong_tools._increment_song(track_name)
+    bong_song_stats._increment_song(track_name)
     if bong_tools.current_track or bong_tools.pending_play_audio:
         bong_tools.song_queue.append(track_path)
         pos = len(bong_tools.song_queue)

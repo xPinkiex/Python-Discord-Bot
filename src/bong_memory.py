@@ -1,6 +1,5 @@
 import sys
-import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -8,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from langchain_core.tools import tool
 import debug
 import bong_tools
+import bong_memory_helpers
 
 
 @tool
@@ -17,11 +17,11 @@ def save_memory(fact: str) -> str:
         fact: A concise fact or piece of information to remember (e.g. "Eve loves dubstep and skrillex", "Radon is an orange fox who likes cars").
     """
     try:
-        clean_fact = bong_tools._clean_for_embedding(fact)
+        clean_fact = bong_memory_helpers._clean_for_embedding(fact)
 
-        contradiction_id = bong_tools._find_contradiction(clean_fact, bong_tools.current_user_id)
+        contradiction_id = bong_memory_helpers._find_contradiction(clean_fact, bong_tools.current_user_id)
         if contradiction_id:
-            collection = bong_tools._vector_db._collection
+            collection = bong_memory_helpers._vector_db._collection
             try:
                 old = collection.get(ids=[contradiction_id], include=["documents", "metadatas"])
                 old_text = old["documents"][0] if old["documents"] else "(unknown)"
@@ -30,23 +30,23 @@ def save_memory(fact: str) -> str:
                 old_meta["saved_at"] = datetime.now().timestamp()
                 if bong_tools.current_username:
                     old_meta["username"] = bong_tools.current_username
-                bong_tools._vector_db.add_texts([clean_fact], metadatas=[old_meta])
+                bong_memory_helpers._vector_db.add_texts([clean_fact], metadatas=[old_meta])
                 return f"Updated memory: {old_text} → {clean_fact}"
             except Exception as e:
-                bong_tools._vector_db.add_texts(
+                bong_memory_helpers._vector_db.add_texts(
                     [clean_fact],
                     metadatas=[{"user_id": bong_tools.current_user_id, "saved_at": datetime.now().timestamp(), "username": bong_tools.current_username or ""}],
                 )
                 return f"Remembered: {clean_fact} (failed to replace old: {e})"
 
-        similar = bong_tools._vector_db.similarity_search_with_relevance_scores(clean_fact, k=3)
+        similar = bong_memory_helpers._vector_db.similarity_search_with_relevance_scores(clean_fact, k=3)
         for doc, score in similar:
             if score >= 0.7:
                 existing_uid = doc.metadata.get("user_id")
                 if existing_uid == bong_tools.current_user_id:
                     return f"Already remembered something similar: {doc.page_content}"
 
-        bong_tools._vector_db.add_texts(
+        bong_memory_helpers._vector_db.add_texts(
             [clean_fact],
             metadatas=[{"user_id": bong_tools.current_user_id, "saved_at": datetime.now().timestamp(), "username": bong_tools.current_username or ""}],
         )
@@ -61,7 +61,7 @@ def recall_memories_by_userid(query: str) -> str:
     Args:
         query: What to search for (e.g. "music preferences", "inside jokes about cars").
     """
-    results = bong_tools.retrieve_memories(query, user_id=bong_tools.current_user_id)
+    results = bong_memory_helpers.retrieve_memories(query, user_id=bong_tools.current_user_id)
     if not results:
         return "No relevant memories found for this user."
     return results
@@ -73,7 +73,7 @@ def recall_memories_general(query: str) -> str:
     Args:
         query: What to search for (e.g. "Radon's fursona", "inside jokes", "who likes dubstep").
     """
-    results = bong_tools.retrieve_memories(query)
+    results = bong_memory_helpers.retrieve_memories(query)
     if not results:
         return "No relevant memories found."
     return results
@@ -86,15 +86,15 @@ def forget_memory(query: str) -> str:
         query: A description of the memory to forget (e.g. "Eve likes dubstep", "Radon's favorite color").
     """
     try:
-        clean_query = bong_tools._clean_for_embedding(query)
-        results = bong_tools._vector_db.similarity_search_with_relevance_scores(clean_query, k=3, filter={"user_id": bong_tools.current_user_id})
+        clean_query = bong_memory_helpers._clean_for_embedding(query)
+        results = bong_memory_helpers._vector_db.similarity_search_with_relevance_scores(clean_query, k=3, filter={"user_id": bong_tools.current_user_id})
         for doc, score in results:
             if score >= 0.5:
                 doc_id = doc.id if hasattr(doc, 'id') else doc.metadata.get("id")
                 if doc_id:
-                    collection = bong_tools._vector_db._collection
+                    collection = bong_memory_helpers._vector_db._collection
                     collection.delete(ids=[doc_id])
-                    return f"Forgot: {doc.page_content}"
+                    return f"Forgetted: {doc.page_content}"
         return "No similar memory found to forget. Try describing it differently."
     except Exception as e:
         return f"Failed to forget memory: {e}"

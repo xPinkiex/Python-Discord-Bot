@@ -11,7 +11,10 @@ import argparse
 import discord
 import asyncio
 import os
+import signal
+import subprocess
 import sys
+import time
 import types
 import importlib
 from datetime import datetime
@@ -28,6 +31,97 @@ BONG_USER_DATA = PROJECT_ROOT / "bong_user_data"
 
 import debug
 
+_ollama_process = None
+
+
+def _start_ollama():
+    global _ollama_process
+
+    ollama_host = os.getenv("OLLAMA_HOST", "127.0.0.1:11434")
+    env = {**os.environ, "OLLAMA_HOST": ollama_host}
+
+    _kill_ollama()
+
+    debug.log("Ollama", f"Starting ollama serve (OLLAMA_HOST={ollama_host})...")
+    _ollama_process = subprocess.Popen(
+        ["ollama", "serve"],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    _wait_for_ollama(ollama_host)
+
+    model = "nomic-embed-text"
+    debug.log("Ollama", f"Ensuring embedding model '{model}' is pulled...")
+    subprocess.run(
+        ["ollama", "pull", model],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    debug.log("Ollama", "Ready.")
+
+
+def _kill_ollama():
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "ollama serve"],
+            capture_output=True, text=True,
+        )
+        for pid_str in result.stdout.strip().splitlines():
+            pid = int(pid_str.strip())
+            if pid != os.getpid():
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+        time.sleep(0.5)
+        for pid_str in result.stdout.strip().splitlines():
+            pid = int(pid_str.strip())
+            if pid != os.getpid():
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+    except Exception:
+        pass
+    time.sleep(0.5)
+
+
+def _wait_for_ollama(ollama_host, timeout=30):
+    import urllib.request
+    import urllib.error
+
+    host, _, port = ollama_host.partition(":")
+    port = port or "11434"
+    url = f"http://127.0.0.1:{port}/api/tags"
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=2):
+                debug.log("Ollama", "Server is responding.")
+                return
+        except (urllib.error.URLError, ConnectionRefusedError, OSError):
+            time.sleep(0.5)
+    raise RuntimeError(f"Ollama server did not respond within {timeout}s at {url}")
+
+
+def _stop_ollama():
+    global _ollama_process
+    if _ollama_process is not None:
+        debug.log("Ollama", "Stopping ollama serve...")
+        try:
+            _ollama_process.terminate()
+            _ollama_process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _ollama_process.kill()
+        except Exception:
+            pass
+        _ollama_process = None
+
 
 def main():
     parser = argparse.ArgumentParser(description="Bong Discord Bot")
@@ -38,6 +132,8 @@ def main():
         debug.toggle_debug(True)
 
     load_dotenv(PROJECT_ROOT / ".env")
+
+    _start_ollama()
 
     TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -56,11 +152,13 @@ def main():
         debug.log("Bot", 'Bot booted, loading extensions...')
         await bot.load_extension('src.bong')
         import bong_tools
+        import bong_song_stats
+        import bong_memory_helpers
         import dm_approval
         import reminders
         import user_data
-        bong_tools._expire_old_memories()
-        bong_tools.load_song_stats()
+        bong_memory_helpers._expire_old_memories()
+        bong_song_stats.load_song_stats()
         bong_tools.start_time = datetime.now()
         user_data.load_users()
         reminders.load_reminders()
@@ -198,7 +296,14 @@ def main():
         new_state = debug.toggle_debug(enabled)
         await ctx.send(f"Debug mode {'enabled' if new_state else 'disabled'}")
 
-    bot.run(TOKEN)
+    @bot.event
+    async def on_close():
+        _stop_ollama()
+
+    try:
+        bot.run(TOKEN)
+    finally:
+        _stop_ollama()
 
 
 if __name__ == "__main__":

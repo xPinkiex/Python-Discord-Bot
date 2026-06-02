@@ -9,6 +9,8 @@ import debug
 import reminders
 import user_data
 import bong_tools
+import bong_memory_helpers
+import bong_song_stats
 
 
 @tool
@@ -250,7 +252,7 @@ def bot_stats() -> str:
     else:
         lines.append("Uptime: unknown")
     try:
-        mem_count = bong_tools._vector_db._collection.count()
+        mem_count = bong_memory_helpers._vector_db._collection.count()
         lines.append(f"Memories: {mem_count}")
     except Exception:
         lines.append("Memories: unavailable")
@@ -258,9 +260,9 @@ def bot_stats() -> str:
     lines.append(f"Known users: {known}")
     reminder_count = len(reminders.reminders) if reminders.reminders else 0
     lines.append(f"Pending reminders: {reminder_count}")
-    total_plays = sum(bong_tools._song_stats.values()) if bong_tools._song_stats else 0
+    total_plays = sum(bong_song_stats._song_stats.values()) if bong_song_stats._song_stats else 0
     lines.append(f"Total song plays: {total_plays}")
-    top = bong_tools._get_top_songs(3)
+    top = bong_song_stats._get_top_songs(3)
     if top:
         top_lines = [f"  {i+1}. {name} ({count} plays)" for i, (name, count) in enumerate(top)]
         lines.append("Top songs:\n" + "\n".join(top_lines))
