@@ -10,10 +10,12 @@
 import argparse
 import discord
 import asyncio
+import logging as _logging
 import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import types
 import importlib
@@ -121,6 +123,36 @@ def _stop_ollama():
         except Exception:
             pass
         _ollama_process = None
+
+
+def _console_reader(bot):
+    global _reboot_requested
+    _MUTE_LEVEL = _logging.CRITICAL + 1
+    while True:
+        try:
+            print("Bong_OS: ", end="", flush=True)
+            line = input("")
+        except (EOFError, KeyboardInterrupt):
+            return
+        cmd = line.strip().lower()
+        if cmd == "reboot":
+            debug.log("Console", "Reboot requested via console")
+            _reboot_requested = True
+            asyncio.run_coroutine_threadsafe(bot.close(), bot.loop)
+        elif cmd == "clear":
+            for name in ("discord", "asyncio"):
+                _logging.getLogger(name).setLevel(_MUTE_LEVEL)
+            sys.stdout.write("\033[2J\033[3J\033[H")
+            sys.stdout.flush()
+            sys.stderr.flush()
+            time.sleep(0.3)
+            for name in ("discord", "asyncio"):
+                _logging.getLogger(name).setLevel(_logging.WARNING)
+            print("═══ Console Cleared ═══")
+        elif cmd == "shutdown":
+            print("Shutting down...")
+            asyncio.run_coroutine_threadsafe(bot.close(), bot.loop)
+_reboot_requested = False
 
 
 def main():
@@ -300,10 +332,17 @@ def main():
     async def on_close():
         _stop_ollama()
 
+    t = threading.Thread(target=_console_reader, args=(bot,), daemon=True)
+    t.start()
+
     try:
         bot.run(TOKEN)
     finally:
         _stop_ollama()
+
+    if _reboot_requested:
+        debug.log("Console", "Rebooting...")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 if __name__ == "__main__":

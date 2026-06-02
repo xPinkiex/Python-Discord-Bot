@@ -42,17 +42,202 @@ _MAX_DEBUG_WAVS = 10
 _model_lock = Lock()
 
 _whisper_model = None
-_WHISPER_MODEL_SIZE = "small"
+_WHISPER_MODEL_SIZE = "base"
 _WHISPER_DOWNLOAD_ROOT = str(BONG_DATA / "whisper_models")
 
-_oww_model = None
+_oww_shared_model = None
+_oww_user_states: dict[int, "OwwUserState"] = {}
 _OWW_WAKE_WORD = "hey_bong"
 _OWW_THRESHOLD = 0.5
+_STALE_USER_TIMEOUT = 300
+
+_whisper_semaphore: asyncio.Semaphore | None = None
+
+
+class _SharedAudioFeatures:
+    """AudioFeatures subclass that reuses pre-loaded ONNX sessions instead of creating duplicates.
+
+    Standard AudioFeatures loads ~30MB of ONNX models per instance. By injecting
+    shared sessions, per-user OWW state only costs the buffer overhead (~1MB).
+    """
+
+    def __init__(self, shared_melspec_model, shared_embedding_model):
+        from collections import deque
+        from openwakeword.utils import AudioFeatures as _OrigAudioFeatures
+        self.melspec_model = shared_melspec_model
+        self.embedding_model = shared_embedding_model
+        self.onnx_execution_provider = self.melspec_model.get_providers()[0]
+        self._orig = _OrigAudioFeatures
+        self.raw_data_buffer = deque(maxlen=16000 * 10)
+        self.melspectrogram_buffer = np.ones((76, 32))
+        self.melspectrogram_max_len = 10 * 97
+        self.accumulated_samples = 0
+        self.feature_buffer = self._get_embeddings_init(np.zeros(160000).astype(np.int16))
+        self.feature_buffer_max_len = 120
+
+    def _get_embeddings_init(self, x):
+        spec = self._orig._get_melspectrogram(self, x)
+        windows = []
+        for i in range(0, spec.shape[0], 8):
+            window = spec[i:i + 76]
+            if window.shape[0] == 76:
+                windows.append(window)
+        batch = np.expand_dims(np.array(windows), axis=-1).astype(np.float32)
+        embedding = self.embedding_model.run(None, {'input_1': batch})[0].squeeze()
+        return embedding
+
+    def _buffer_raw_data(self, x):
+        if len(x) < 400:
+            raise ValueError("The number of input frames must be at least 400 samples @ 16khz (25 ms)!")
+        self.raw_data_buffer.extend(x.tolist() if isinstance(x, np.ndarray) else x)
+
+    def _streaming_melspectrogram(self, n_samples):
+        self.melspectrogram_buffer = np.vstack(
+            (self.melspectrogram_buffer, self._orig._get_melspectrogram(self, list(self.raw_data_buffer)[-n_samples - 160 * 3:]))
+        )
+        if self.melspectrogram_buffer.shape[0] > self.melspectrogram_max_len:
+            self.melspectrogram_buffer = self.melspectrogram_buffer[-self.melspectrogram_max_len:, :]
+
+    def _streaming_features(self, x):
+        self._buffer_raw_data(x)
+        self.accumulated_samples += len(x)
+        if self.accumulated_samples >= 1280:
+            self._streaming_melspectrogram(self.accumulated_samples)
+            for i in np.arange(self.accumulated_samples // 1280 - 1, -1, -1):
+                ndx = -8 * i
+                ndx = ndx if ndx != 0 else len(self.melspectrogram_buffer)
+                x_feat = self.melspectrogram_buffer[-76 + ndx:ndx].astype(np.float32)[None, :, :, None]
+                if x_feat.shape[1] == 76:
+                    self.feature_buffer = np.vstack((self.feature_buffer,
+                                                     self.embedding_model.run(None, {'input_1': x_feat})[0].squeeze()))
+            self.accumulated_samples = 0
+        if self.feature_buffer.shape[0] > self.feature_buffer_max_len:
+            self.feature_buffer = self.feature_buffer[-self.feature_buffer_max_len:, :]
+
+    def get_features(self, n_feature_frames: int = 16, start_ndx: int = -1):
+        if start_ndx != -1:
+            end_ndx = start_ndx + int(n_feature_frames) \
+                if start_ndx + n_feature_frames != 0 else len(self.feature_buffer)
+            return self.feature_buffer[start_ndx:end_ndx, :][None, ].astype(np.float32)
+        else:
+            return self.feature_buffer[int(-1 * n_feature_frames):, :][None, ].astype(np.float32)
+
+    def __call__(self, x):
+        self._streaming_features(x)
+
+
+class OwwUserState:
+    """Per-user openWakeWord state: separate preprocessor + prediction buffers,
+    borrowing ONNX inference sessions from the shared model."""
+
+    def __init__(self, user_id: int, shared_oww_model):
+        self.user_id = user_id
+        self.shared_model = shared_oww_model
+        from functools import partial
+        from collections import deque
+        self.prediction_buffer: dict[str, deque] = defaultdict(partial(deque, maxlen=30))
+        self.vad_prediction_buffer: list = []
+        self.last_audio_time = time.time()
+        self.preprocessor = _SharedAudioFeatures(
+            shared_oww_model.preprocessor.melspec_model,
+            shared_oww_model.preprocessor.embedding_model,
+        )
+        self._model_name = list(shared_oww_model.models.keys())[0]
+        self._model_inputs = shared_oww_model.model_inputs[self._model_name]
+        self._model_input_name = shared_oww_model.model_input_names[self._model_name]
+        self._class_mapping = shared_oww_model.class_mapping.get(self._model_name, {})
+
+    def predict(self, audio_chunk: np.ndarray, vad_threshold: float = 0.5) -> dict:
+        self.last_audio_time = time.time()
+        self.preprocessor(audio_chunk)
+        onnx_session = self.shared_model.models[self._model_name]
+        if len(audio_chunk) > 1280:
+            group_predictions = []
+            for i in np.arange(len(audio_chunk) // 1280 - 1, -1, -1):
+                group_predictions.extend(
+                    onnx_session.run(
+                        None,
+                        {self._model_input_name: self.preprocessor.get_features(
+                            self._model_inputs,
+                            start_ndx=-self._model_inputs - i
+                        )}
+                    )
+                )
+            prediction = np.array(group_predictions).max(axis=0)[None, ]
+        else:
+            prediction = onnx_session.run(
+                None,
+                {self._model_input_name: self.preprocessor.get_features(self._model_inputs)}
+            )
+        predictions = {}
+        if self.shared_model.model_outputs[self._model_name] == 1:
+            predictions[self._model_name] = prediction[0][0][0]
+            if self._class_mapping:
+                for int_label, cls in self._class_mapping.items():
+                    predictions[cls] = prediction[0][0][int(int_label)]
+        else:
+            for int_label, cls in self._class_mapping.items():
+                predictions[cls] = prediction[0][0][int(int_label)]
+        for cls in predictions.keys():
+            if len(self.prediction_buffer[cls]) < 5:
+                predictions[cls] = 0.0
+            self.prediction_buffer[cls].append(predictions[cls])
+        if vad_threshold > 0 and hasattr(self.shared_model, 'vad') and self.shared_model.vad is not None:
+            self.shared_model.vad(audio_chunk)
+            self.vad_prediction_buffer = list(self.shared_model.vad.prediction_buffer)
+            vad_frames = list(self.vad_prediction_buffer)[-7:-4]
+            vad_max_score = np.max(vad_frames) if len(vad_frames) > 0 else 0
+            for mdl in predictions.keys():
+                if vad_max_score < vad_threshold:
+                    predictions[mdl] = 0.0
+        return predictions
+
+    def reset(self):
+        from functools import partial
+        from collections import deque
+        self.prediction_buffer = defaultdict(partial(deque, maxlen=30))
+        self.vad_prediction_buffer = []
+        self.preprocessor = _SharedAudioFeatures(
+            self.shared_model.preprocessor.melspec_model,
+            self.shared_model.preprocessor.embedding_model,
+        )
+
+
+def _predict_for_user(user_id: int, audio_chunk: np.ndarray) -> dict:
+    global _oww_shared_model
+    if _oww_shared_model is None:
+        return {}
+    if user_id not in _oww_user_states:
+        _oww_user_states[user_id] = OwwUserState(user_id, _oww_shared_model)
+    state = _oww_user_states[user_id]
+    return state.predict(audio_chunk, vad_threshold=_oww_shared_model.vad_threshold if _oww_shared_model.vad_threshold > 0 else 0)
+
+
+def _reset_oww_for_user(user_id: int):
+    if user_id in _oww_user_states:
+        _oww_user_states[user_id].reset()
+        _vlog(f"[oww] Reset state for user {user_id}")
+
+
+def _destroy_oww_for_user(user_id: int):
+    if user_id in _oww_user_states:
+        del _oww_user_states[user_id]
+        _vlog(f"[oww] Destroyed state for user {user_id}")
+
+
+def _cleanup_stale_oww_states():
+    now = time.time()
+    stale = [uid for uid, state in _oww_user_states.items()
+             if now - state.last_audio_time > _STALE_USER_TIMEOUT]
+    for uid in stale:
+        _destroy_oww_for_user(uid)
+    if stale:
+        _vlog(f"[oww] Cleaned up {len(stale)} stale user state(s)")
 
 
 def _load_models():
     """Load both Whisper and openWakeWord models into RAM."""
-    global _whisper_model, _oww_model
+    global _whisper_model, _oww_shared_model
     with _model_lock:
         if _whisper_model is None:
             from faster_whisper import WhisperModel
@@ -66,14 +251,14 @@ def _load_models():
                 num_workers=1,
             )
             _vlog("Whisper model loaded")
-        if _oww_model is None:
+        if _oww_shared_model is None:
             import warnings
             warnings.filterwarnings("ignore", message="Specified provider.*not in available")
             from openwakeword.model import Model
             custom_model = BONG_DATA / "wakeword_models" / "hey_bong.onnx"
             if custom_model.exists():
                 _vlog(f"Loading custom openWakeWord model ({custom_model})...")
-                _oww_model = Model(wakeword_model_paths=[str(custom_model)], vad_threshold=0.5)
+                _oww_shared_model = Model(wakeword_model_paths=[str(custom_model)], vad_threshold=0.5)
             else:
                 import openwakeword
                 oww_file = openwakeword.__file__
@@ -82,16 +267,18 @@ def _load_models():
                 model_dir = Path(oww_file).parent / "resources" / "models"
                 model_path = model_dir / "hey_jarvis_v0.1.onnx"
                 _vlog("Loading fallback openWakeWord model...")
-                _oww_model = Model(wakeword_model_paths=[str(model_path)], vad_threshold=0.5)
-            _vlog("openWakeWord model loaded")
+                _oww_shared_model = Model(wakeword_model_paths=[str(model_path)], vad_threshold=0.5)
+            _oww_user_states.clear()
+            _vlog("openWakeWord shared model loaded")
 
 
 def _unload_models():
     """Free both Whisper and openWakeWord models from RAM."""
-    global _whisper_model, _oww_model
+    global _whisper_model, _oww_shared_model
     with _model_lock:
         _whisper_model = None
-        _oww_model = None
+        _oww_shared_model = None
+        _oww_user_states.clear()
     gc.collect()
     _vlog("Unloaded voice models")
 
@@ -105,11 +292,11 @@ def _get_whisper_model():
 
 
 def _get_oww_model():
-    global _oww_model
+    global _oww_shared_model
     with _model_lock:
-        if _oww_model is None:
+        if _oww_shared_model is None:
             _load_models()
-        return _oww_model
+        return _oww_shared_model
 
 
 def _vlog(msg: str):
@@ -169,7 +356,7 @@ CHANNELS = 2          # Stereo
 WHISPER_SAMPLE_RATE = 16000  # Whisper expects 16kHz mono
 WHISPER_CHANNELS = 1
 FRAME_SIZE = SAMPLE_RATE * SAMPLE_WIDTH * CHANNELS // 50  # Bytes per 20ms frame (3840)
-SILENCE_DURATION = 1.5   # Seconds of silence to mark end of utterance
+SILENCE_DURATION = 0.8   # Seconds of silence to mark end of utterance
 MIN_UTTERANCE_DURATION = 0.5  # Minimum seconds to consider an utterance
 MAX_UTTERANCE_DURATION = 30.0  # Maximum seconds before forcing transcription
 
@@ -258,32 +445,26 @@ class BongVoiceSink(AudioSink):
         is_fake = isinstance(data.packet, FakePacket)
 
         if not is_fake:
-            resampled = _resample_48k_stereo_to_16k_mono(pcm_data)
-            self._oww_buffers[user_id].extend(resampled)
+            if user_data.is_authorized(user_id):
+                resampled = _resample_48k_stereo_to_16k_mono(pcm_data)
+                self._oww_buffers[user_id].extend(resampled)
 
-            # Feed 80ms chunks to openWakeWord
-            while len(self._oww_buffers[user_id]) >= OWW_FRAME_BYTES:
-                chunk = bytes(self._oww_buffers[user_id][:OWW_FRAME_BYTES])
-                self._oww_buffers[user_id] = self._oww_buffers[user_id][OWW_FRAME_BYTES:]
-                audio_chunk = np.frombuffer(chunk, dtype=np.int16)
-                try:
-                    oww = _get_oww_model()
-                    prediction = oww.predict(audio_chunk)
-                    score = float(prediction.get(_OWW_WAKE_WORD, 0))
-                    if score >= _OWW_THRESHOLD:
-                        if not self._activated.get(user_id, False):
-                            _vlog(f"[write] user={user_id} WAKE WORD DETECTED (score={score:.2f})")
-                            self._activated[user_id] = True
-                            if _oww_model is not None:
-                                try:
-                                    _oww_model.reset()
-                                    if hasattr(_oww_model, 'vad') and hasattr(_oww_model.vad, 'reset_states'):
-                                        _oww_model.vad.reset_states()
-                                    _vlog("[write] Reset openWakeWord after detection")
-                                except Exception as e:
-                                    _vlog(f"[write] Failed to reset openWakeWord: {e}")
-                except Exception as e:
-                    _vlog(f"[write] openWakeWord error: {e}")
+                while len(self._oww_buffers[user_id]) >= OWW_FRAME_BYTES:
+                    chunk = bytes(self._oww_buffers[user_id][:OWW_FRAME_BYTES])
+                    self._oww_buffers[user_id] = self._oww_buffers[user_id][OWW_FRAME_BYTES:]
+                    audio_chunk = np.frombuffer(chunk, dtype=np.int16)
+                    try:
+                        prediction = _predict_for_user(user_id, audio_chunk)
+                        score = float(prediction.get(_OWW_WAKE_WORD, 0))
+                        if score >= _OWW_THRESHOLD:
+                            if not self._activated.get(user_id, False):
+                                _vlog(f"[write] user={user_id} WAKE WORD DETECTED (score={score:.2f})")
+                                self._activated[user_id] = True
+                                _reset_oww_for_user(user_id)
+                    except Exception as e:
+                        _vlog(f"[write] openWakeWord error: {e}")
+            else:
+                self._oww_buffers.pop(user_id, None)
 
         # Only buffer audio for Whisper after wake word has been detected
         if not self._activated.get(user_id, False):
@@ -303,6 +484,7 @@ class BongVoiceSink(AudioSink):
         self._buffers[user_id] = bytearray()
         self._activated[user_id] = False
         self._last_speech.pop(user_id, None)
+        _reset_oww_for_user(user_id)
         if duration < MIN_UTTERANCE_DURATION:
             _vlog(f"[flush] Utterance too short ({duration:.2f}s), discarding")
             return None
@@ -315,13 +497,17 @@ class BongVoiceSink(AudioSink):
         guild_id = self.guild.id
         _active_listeners.pop(guild_id, None)
         _is_listening[guild_id] = False
+        for uid in list(self._oww_buffers.keys()):
+            _destroy_oww_for_user(uid)
+        self._oww_buffers.clear()
 
     async def start_silence_checker(self):
         """Background task that checks for completed utterances based on silence gaps."""
         _vlog("[silence_checker] Started")
         while not self._stopped:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.15)
             now = time.time()
+            _cleanup_stale_oww_states()
             for user_id in list(self._buffers.keys()):
                 if self._stopped:
                     break
@@ -342,8 +528,13 @@ class BongVoiceSink(AudioSink):
                         _vlog(f"[silence_checker] Ignoring unauthorized user {user_id}")
                         continue
 
-                    _vlog(f"[silence_checker] Transcribing utterance from {user_id} ({duration:.1f}s)")
-                    text = await asyncio.to_thread(self._transcribe, pcm_data, user_id)
+                    _vlog(f"[silence_checker] Queuing transcription for {user_id} ({duration:.1f}s)")
+                    if _whisper_semaphore:
+                        async with _whisper_semaphore:
+                            _vlog(f"[silence_checker] Transcribing utterance from {user_id} ({duration:.1f}s)")
+                            text = await asyncio.to_thread(self._transcribe, pcm_data, user_id)
+                    else:
+                        text = await asyncio.to_thread(self._transcribe, pcm_data, user_id)
                     if text:
                         _vlog(f"[silence_checker] Transcribed ({user_id}): '{text}'")
                         await self._handle_transcription(user_id, text)
@@ -448,6 +639,7 @@ class BongVoiceSink(AudioSink):
 
 async def start_listening(bot, guild, text_channel) -> str:
     """Start listening for voice commands in a guild's voice channel."""
+    global _whisper_semaphore
     guild_id = guild.id
     if _is_listening.get(guild_id, False):
         return "Already listening for voice commands."
@@ -462,6 +654,9 @@ async def start_listening(bot, guild, text_channel) -> str:
     except Exception as e:
         _vlog(f"Failed to load voice models: {e}")
         return f"Failed to load voice models: {e}"
+
+    if _whisper_semaphore is None:
+        _whisper_semaphore = asyncio.Semaphore(1)
 
     if not isinstance(vc, VoiceRecvClient):
         _vlog("Current voice client is not VoiceRecvClient, reconnecting...")
@@ -502,6 +697,7 @@ async def start_listening(bot, guild, text_channel) -> str:
 
 async def stop_listening(guild) -> str:
     """Stop listening for voice commands in a guild's voice channel."""
+    global _whisper_semaphore
     guild_id = guild.id
     if not _is_listening.get(guild_id, False):
         return "Not currently listening for voice commands."
@@ -524,6 +720,7 @@ async def stop_listening(guild) -> str:
     if not any(_is_listening.values()):
         _vlog("No more active listeners, unloading voice models")
         await asyncio.to_thread(_unload_models)
+        _whisper_semaphore = None
 
     _vlog(f"Stopped listening for voice commands in guild {guild_id}")
     return "Stopped listening for voice commands."

@@ -445,11 +445,9 @@ class TestSilencePacketHandling:
         data.pcm = self._make_zero_pcm()
         data.packet = SilencePacket(ssrc=1, timestamp=100)
 
-        with patch('voice_commands._get_oww_model') as mock_oww_getter:
-            mock_oww = MagicMock()
-            mock_oww_getter.return_value = mock_oww
+        with patch('voice_commands._predict_for_user') as mock_predict:
             sink.write(user, data)
-            mock_oww.predict.assert_not_called()
+            mock_predict.assert_not_called()
 
 
 class TestPeakThreshold:
@@ -519,11 +517,9 @@ class TestFakePacketHandling:
         data.pcm = self._make_speech_frame(2000)
         data.packet = FakePacket(ssrc=1, sequence=1, timestamp=100)
 
-        with patch('voice_commands._get_oww_model') as mock_oww_getter:
-            mock_oww = MagicMock()
-            mock_oww_getter.return_value = mock_oww
+        with patch('voice_commands._predict_for_user') as mock_predict:
             sink.write(user, data)
-            mock_oww.predict.assert_not_called()
+            mock_predict.assert_not_called()
 
     def test_fake_packet_not_fed_to_oww_buffer(self):
         sink = BongVoiceSink(MagicMock(), MagicMock(), MagicMock(), MagicMock())
@@ -644,3 +640,94 @@ class TestDebugWavOutput:
                     rst_files = sorted(Path(tmpdir).glob("resampled_*.wav"))
                     assert len(raw_files) <= max_wavs
                     assert len(rst_files) <= max_wavs
+
+
+class TestPerUserOwwState:
+
+    def test_authorized_user_gets_oww_state(self):
+        voice_commands._oww_user_states.clear()
+        with patch('voice_commands.user_data.is_authorized', return_value=True):
+            with patch('voice_commands._predict_for_user', return_value={"hey_bong": 0.0}):
+                sink = BongVoiceSink(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+                user = MagicMock()
+                user.id = 100
+                user.bot = False
+                data = MagicMock()
+                data.pcm = np.zeros(SAMPLE_RATE // 50 * CHANNELS, dtype=np.int16).tobytes()
+                data.packet = MagicMock()
+                data.packet.extension_data = {}
+                sink.write(user, data)
+        voice_commands._oww_user_states.clear()
+
+    def test_unauthorized_user_skips_oww(self):
+        voice_commands._oww_user_states.clear()
+        with patch('voice_commands.user_data.is_authorized', return_value=False):
+            with patch('voice_commands._predict_for_user') as mock_predict:
+                sink = BongVoiceSink(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+                user = MagicMock()
+                user.id = 200
+                user.bot = False
+                data = MagicMock()
+                data.pcm = np.zeros(SAMPLE_RATE // 50 * CHANNELS, dtype=np.int16).tobytes()
+                data.packet = MagicMock()
+                data.packet.extension_data = {}
+                sink.write(user, data)
+                mock_predict.assert_not_called()
+        voice_commands._oww_user_states.clear()
+
+    def test_reset_oww_for_user_clears_state(self):
+        voice_commands._oww_user_states.clear()
+        fake_state = MagicMock()
+        voice_commands._oww_user_states[300] = fake_state
+        voice_commands._reset_oww_for_user(300)
+        fake_state.reset.assert_called_once()
+        voice_commands._oww_user_states.clear()
+
+    def test_destroy_oww_for_user_removes_state(self):
+        voice_commands._oww_user_states.clear()
+        fake_state = MagicMock()
+        voice_commands._oww_user_states[400] = fake_state
+        voice_commands._destroy_oww_for_user(400)
+        assert 400 not in voice_commands._oww_user_states
+        voice_commands._oww_user_states.clear()
+
+    def test_cleanup_stale_oww_states(self):
+        import time
+        voice_commands._oww_user_states.clear()
+        fresh_state = MagicMock()
+        fresh_state.last_audio_time = time.time()
+        stale_state = MagicMock()
+        stale_state.last_audio_time = time.time() - voice_commands._STALE_USER_TIMEOUT - 10
+        voice_commands._oww_user_states[500] = fresh_state
+        voice_commands._oww_user_states[501] = stale_state
+        voice_commands._cleanup_stale_oww_states()
+        assert 500 in voice_commands._oww_user_states
+        assert 501 not in voice_commands._oww_user_states
+        voice_commands._oww_user_states.clear()
+
+    def test_flush_resets_oww_state(self):
+        voice_commands._oww_user_states.clear()
+        sink = BongVoiceSink(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        num_frames = int(SAMPLE_RATE * 1.0)
+        fake_pcm = b'\x00' * (num_frames * SAMPLE_WIDTH * CHANNELS)
+        sink._buffers[600] = bytearray(fake_pcm)
+        fake_state = MagicMock()
+        voice_commands._oww_user_states[600] = fake_state
+        with patch('voice_commands._reset_oww_for_user') as mock_reset:
+            sink._flush_utterance(600)
+            mock_reset.assert_called_once_with(600)
+        voice_commands._oww_user_states.clear()
+
+    def test_unauthorized_user_oww_buffer_cleared(self):
+        sink = BongVoiceSink(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        user = MagicMock()
+        user.id = 700
+        user.bot = False
+        with patch('voice_commands.user_data.is_authorized', return_value=False):
+            data = MagicMock()
+            data.pcm = np.zeros(SAMPLE_RATE // 50 * CHANNELS, dtype=np.int16).tobytes()
+            data.packet = MagicMock()
+            data.packet.extension_data = {}
+            sink._oww_buffers[700] = bytearray(b'\x00' * 100)
+            sink.write(user, data)
+            assert 700 not in sink._oww_buffers or len(sink._oww_buffers[700]) == 0
