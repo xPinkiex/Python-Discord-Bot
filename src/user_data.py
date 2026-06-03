@@ -16,9 +16,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BONG_DATA = PROJECT_ROOT / "bong_data"
 BONG_USER_DATA = PROJECT_ROOT / "bong_user_data"
 
-_USERS_FILE = BONG_USER_DATA / "users.json"
+import persist
 
-# In-memory data: user_id -> dict of settings
+_STORE_PATH = BONG_USER_DATA / "users.json"
+_store = persist.PersistStore(_STORE_PATH, default={})
+persist.register(_store)
+
+# In-memory data: user_id -> dict of settings (alias to _store.data after load)
 _user_data: dict[int, dict] = {}
 
 # The owner who receives approval requests — always admin
@@ -28,30 +32,24 @@ OWNER_ID = 273761843544064000
 def load_users():
     """Load user data from disk. Owner is always guaranteed admin."""
     global _user_data
-    _user_data = {}
-    try:
-        if _USERS_FILE.exists():
-            with open(_USERS_FILE, "r") as f:
-                raw = json.load(f)
-            for uid_str, value in raw.items():
-                uid = int(uid_str)
-                if isinstance(value, str):
-                    _user_data[uid] = {"tier": value}
-                else:
-                    _user_data[uid] = dict(value)
-    except Exception:
-        _user_data = {}
-    _user_data.setdefault(OWNER_ID, {})["tier"] = "admin"
+    _store.load()
+    raw = dict(_store.data)
+    converted = {}
+    for uid_str, value in raw.items():
+        uid = int(uid_str)
+        if isinstance(value, str):
+            converted[uid] = {"tier": value}
+        else:
+            converted[uid] = dict(value)
+    converted.setdefault(OWNER_ID, {})["tier"] = "admin"
+    _store.data = converted
+    _store.mark_dirty()
+    _user_data = _store.data
 
 
 def save_users():
-    """Persist all user data to disk."""
-    try:
-        data = {str(uid): settings for uid, settings in _user_data.items()}
-        with open(_USERS_FILE, "w") as f:
-            json.dump(data, f, indent=2)
-    except Exception:
-        pass
+    """Mark user data as needing a flush to disk."""
+    _store.mark_dirty()
 
 
 def get_tier(user_id: int) -> str | None:
@@ -80,7 +78,7 @@ def is_known(user_id: int) -> bool:
 def set_tier(user_id: int, tier: str):
     """Set the permission tier for a user and persist."""
     _user_data.setdefault(user_id, {})["tier"] = tier
-    save_users()
+    _store.mark_dirty()
 
 
 def get_timezone(user_id: int) -> float | None:
@@ -94,7 +92,7 @@ def get_timezone(user_id: int) -> float | None:
 def set_timezone(user_id: int, offset: float):
     """Set the UTC offset for a user and persist."""
     _user_data.setdefault(user_id, {})["timezone"] = offset
-    save_users()
+    _store.mark_dirty()
 
 
 def remove_timezone(user_id: int):
@@ -102,7 +100,33 @@ def remove_timezone(user_id: int):
     entry = _user_data.get(user_id)
     if entry and "timezone" in entry:
         del entry["timezone"]
-        save_users()
+        _store.mark_dirty()
+
+
+def add_tokens(user_id: int, count: int, display_name: str = ""):
+    """Add token count to a user's lifetime total and persist."""
+    entry = _user_data.setdefault(user_id, {})
+    entry["tokens"] = entry.get("tokens", 0) + count
+    if display_name:
+        entry["display_name"] = display_name
+    _store.mark_dirty()
+
+
+def get_tokens(user_id: int) -> int:
+    """Get the lifetime token total for a user, or 0."""
+    entry = _user_data.get(user_id)
+    if entry is None:
+        return 0
+    return entry.get("tokens", 0)
+
+
+def get_top_users_by_tokens(n: int = 3) -> list[tuple[int, str, int]]:
+    """Return top N users by token usage as (user_id, display_name, count)."""
+    sorted_users = sorted(
+        ((uid, d.get("display_name", ""), d.get("tokens", 0)) for uid, d in _user_data.items() if d.get("tokens", 0) > 0),
+        key=lambda x: x[2], reverse=True,
+    )
+    return sorted_users[:n]
 
 
 # ---- Timezone name / city lookup ----

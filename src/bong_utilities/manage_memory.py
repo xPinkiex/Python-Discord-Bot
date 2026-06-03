@@ -33,6 +33,25 @@ def format_user(uid):
     return "unknown"
 
 
+def _get_indexed_memories(user_id: int | None = None) -> list:
+    all_data = collection.get(include=["documents", "metadatas"])
+    if not all_data["ids"]:
+        return []
+
+    indexed = []
+    for doc_id, text, meta in zip(all_data["ids"], all_data["documents"], all_data["metadatas"]):
+        if user_id is not None and meta.get("user_id") != user_id:
+            continue
+        class _Doc:
+            pass
+        doc = _Doc()
+        doc.id = doc_id
+        doc.page_content = text
+        doc.metadata = meta
+        indexed.append(doc)
+    return indexed
+
+
 def search_memories(query: str, k: int = 10) -> str:
     """Search memories by query. Returns a formatted string of results."""
     total = collection.count()
@@ -80,7 +99,20 @@ def add_memory(text: str, user_id: int | None = None) -> str:
 
 
 def delete_memory_by_query(query: str, user_id: int | None = None) -> str:
-    """Delete memories matching a query. If user_id is given, only delete that user's memories."""
+    """Delete memories by index or matching a query. If user_id is given, only delete that user's memories."""
+    if query.isdigit():
+        idx = int(query) - 1
+        indexed = _get_indexed_memories(user_id)
+        if not indexed:
+            return "No memories stored yet."
+        if idx < 0 or idx >= len(indexed):
+            return f"Index {query} out of range (1-{len(indexed)})."
+        doc = indexed[idx]
+        doc_id = doc.id
+        uid = doc.metadata.get('user_id')
+        collection.delete(ids=[doc_id])
+        return f"Deleted memory at index {query}:\n  {doc.page_content}\n  user_id: {format_user(uid)}"
+
     total = collection.count()
     if total == 0:
         return "No memories stored yet."
@@ -164,7 +196,7 @@ if __name__ == "__main__":
     parser.add_argument("-k", type=int, default=10, help="Number of search results (default: 10)")
     parser.add_argument("-a", "--add", nargs="?", const="", help="Add a memory. Provide text or leave blank to be prompted")
     parser.add_argument("-l", "--list", action="store_true", help="List all memories")
-    parser.add_argument("-d", "--delete", nargs="?", const="", help="Delete memories. Optionally provide a search query to filter, or leave blank to list all")
+    parser.add_argument("-d", "--delete", nargs="?", const="", help="Delete memories. Provide an index number or search query; leave blank to list and pick interactively")
     parser.add_argument("-e", "--edit", nargs="?", const="", help="Edit a memory. Optionally provide a search query to filter, or leave blank to list all")
     parser.add_argument("-u", "--user", type=int, help="Filter by user ID")
     parser.add_argument("-m", "--migrate", nargs="*", help="Batch metadata migration. 0 args: interactive. 1 arg KEY=VALUE: add/set metadata on all memories. 2 args OLD_KEY=VAL NEW_KEY=VAL: replace metadata on matching memories.")
@@ -181,16 +213,81 @@ if __name__ == "__main__":
 
     elif args.delete is not None:
         if args.delete:
-            print(delete_memory_by_query(args.delete, user_id=args.user))
+            if args.delete.isdigit():
+                indexed = _get_indexed_memories(user_id=args.user)
+                idx = int(args.delete) - 1
+                if not indexed:
+                    print("No memories stored yet.")
+                    sys.exit()
+                if idx < 0 or idx >= len(indexed):
+                    print(f"Index {args.delete} out of range (1-{len(indexed)}).")
+                    sys.exit()
+                doc = indexed[idx]
+                uid = doc.metadata.get('user_id')
+                print(f"  Will delete: {doc.page_content}")
+                print(f"  user_id: {format_user(uid)}")
+                confirm = input("Confirm deletion? [y/N] ").strip().lower()
+                if confirm != "y":
+                    print("Cancelled.")
+                    sys.exit()
+                print(delete_memory_by_query(args.delete, user_id=args.user))
+            else:
+                print(delete_memory_by_query(args.delete, user_id=args.user))
         else:
-            print(list_memories())
-            print("\n(Use --delete QUERY to delete matching memories)")
+            indexed = _get_indexed_memories(user_id=args.user)
+            if not indexed:
+                print("No memories stored yet.")
+                sys.exit()
+            for i, doc in enumerate(indexed, 1):
+                uid = doc.metadata.get('user_id')
+                c = COLOR_EVEN if i % 2 == 0 else COLOR_ODD
+                print(f"  {c}{i}. {doc.page_content}{RESET}")
+                print(f"  {c}   user_id: {format_user(uid)}{RESET}")
+            print()
+            choice = input("Enter index or search query to delete (or Enter to cancel): ").strip()
+            if not choice:
+                print("Cancelled.")
+                sys.exit()
+            if choice.isdigit():
+                idx = int(choice) - 1
+                if idx < 0 or idx >= len(indexed):
+                    print(f"Index {choice} out of range (1-{len(indexed)}).")
+                    sys.exit()
+                doc = indexed[idx]
+                uid = doc.metadata.get('user_id')
+                print(f"  Will delete: {doc.page_content}")
+                print(f"  user_id: {format_user(uid)}")
+                confirm = input("Confirm deletion? [y/N] ").strip().lower()
+                if confirm != "y":
+                    print("Cancelled.")
+                    sys.exit()
+                collection.delete(ids=[doc.id])
+                print(f"Deleted memory at index {choice}.")
+            else:
+                print(delete_memory_by_query(choice, user_id=args.user))
 
     elif args.what:
         print(search_memories(args.what, k=args.k))
 
     elif args.edit is not None:
-        if args.edit:
+        if args.edit and args.edit.isdigit():
+            indexed = _get_indexed_memories(user_id=args.user)
+            if not indexed:
+                print("No memories saved yet.")
+                sys.exit()
+            idx = int(args.edit) - 1
+            if idx < 0 or idx >= len(indexed):
+                print(f"Index {args.edit} out of range (1-{len(indexed)}).")
+                sys.exit()
+            for i, doc in enumerate(indexed, 1):
+                uid = doc.metadata.get('user_id')
+                c = COLOR_EVEN if i % 2 == 0 else COLOR_ODD
+                marker = ">>>" if i - 1 == idx else "   "
+                print(f"  {c}{marker} {i}. {doc.page_content}{RESET}")
+                print(f"  {c}       user_id: {format_user(uid)}{RESET}")
+            doc = indexed[idx]
+            doc_id = doc.id
+        elif args.edit:
             results = db.similarity_search_with_relevance_scores(args.edit, k=10)
             indexed = []
             for i, (doc, score) in enumerate(results, 1):
@@ -199,42 +296,53 @@ if __name__ == "__main__":
                 print(f"  {c}{i}. [{score:.2f}] {doc.page_content}{RESET}")
                 print(f"  {c}   user_id: {format_user(uid)}{RESET}")
                 indexed.append((doc, score))
+
+            if not indexed:
+                print("No results found.")
+                sys.exit()
+
+            print()
+            choice = input("Enter the index number of the memory to edit, or press Enter to cancel: ").strip()
+            if not choice or not choice.isdigit():
+                print("Cancelled.")
+                sys.exit()
+
+            idx = int(choice) - 1
+            if idx < 0 or idx >= len(indexed):
+                print(f"Index {choice} out of range.")
+                sys.exit()
+
+            doc, score = indexed[idx]
+            doc_id = doc.id if hasattr(doc, 'id') else doc.metadata.get("id")
         else:
-            all_data = collection.get(include=["documents", "metadatas"])
-            if not all_data["ids"]:
+            indexed = _get_indexed_memories(user_id=args.user)
+            if not indexed:
                 print("No memories saved yet.")
                 sys.exit()
-            indexed = []
-            for i, (doc_id, text, meta) in enumerate(zip(all_data["ids"], all_data["documents"], all_data["metadatas"]), 1):
-                class _Doc:
-                    pass
-                doc = _Doc()
-                doc.id = doc_id
-                doc.page_content = text
-                doc.metadata = meta
-                uid = meta.get('user_id')
+            for i, doc in enumerate(indexed, 1):
+                uid = doc.metadata.get('user_id')
                 c = COLOR_EVEN if i % 2 == 0 else COLOR_ODD
                 print(f"  {c}{i}. {doc.page_content}{RESET}")
                 print(f"  {c}   user_id: {format_user(uid)}{RESET}")
-                indexed.append((doc, None))
 
-        if not indexed:
-            print("No results found.")
-            sys.exit()
+            if not indexed:
+                print("No results found.")
+                sys.exit()
 
-        print()
-        choice = input("Enter the index number of the memory to edit, or press Enter to cancel: ").strip()
-        if not choice or not choice.isdigit():
-            print("Cancelled.")
-            sys.exit()
+            print()
+            choice = input("Enter the index number of the memory to edit, or press Enter to cancel: ").strip()
+            if not choice or not choice.isdigit():
+                print("Cancelled.")
+                sys.exit()
 
-        idx = int(choice) - 1
-        if idx < 0 or idx >= len(indexed):
-            print(f"Index {choice} out of range.")
-            sys.exit()
+            idx = int(choice) - 1
+            if idx < 0 or idx >= len(indexed):
+                print(f"Index {choice} out of range.")
+                sys.exit()
 
-        doc, score = indexed[idx]
-        doc_id = doc.id if hasattr(doc, 'id') else doc.metadata.get("id")
+            doc = indexed[idx]
+            doc_id = doc.id
+
         print(f"\nEditing: {doc.page_content}\n")
         uid = doc.metadata.get('user_id')
         print(f"Current user_id: {format_user(uid)}")
@@ -244,9 +352,6 @@ if __name__ == "__main__":
             print("Cancelled.")
             sys.exit()
 
-        new_user_id = int(new_uid) if new_uid else None
-        result = edit_memory(args.edit or "", new_text=new_text, new_user_id=new_user_id) if args.edit else ""
-        # Direct edit for indexed selection
         orig_meta = doc.metadata.copy() if doc.metadata else {}
         if new_uid:
             orig_meta["user_id"] = int(new_uid)

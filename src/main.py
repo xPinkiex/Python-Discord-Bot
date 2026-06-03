@@ -4,8 +4,9 @@
 # owner-only commands for hot-reloading extensions, toggling debug mode,
 # and shutting down the bot.
 #
-# Usage: bong [-d|--debug]
-#   -d, --debug    Enable debug logging (console + file)
+# Usage: bong [-d|--debug] [--reload-backup-data]
+#   -d, --debug                Enable debug logging (console + file)
+#   --reload-backup-data       Restore all data files from their .bak backups on startup
 
 import argparse
 import discord
@@ -122,7 +123,26 @@ def _stop_ollama():
             _ollama_process.kill()
         except Exception:
             pass
-        _ollama_process = None
+_ollama_process = None
+_reboot_requested = False
+_reload_backup = False
+
+
+def _do_restore_backup():
+    import persist
+    import user_data
+    import bong_song_stats
+    import reminders
+    restored = persist.restore_all_from_backup()
+    if restored:
+        user_data.load_users()
+        bong_song_stats.load_song_stats()
+        reminders.load_reminders()
+        files = ", ".join(restored)
+        print(f"Restored from backup: {files}")
+        debug.log("Console", f"Restored from backup: {files}")
+    else:
+        print("No backup files found.")
 
 
 def _console_reader(bot):
@@ -152,12 +172,15 @@ def _console_reader(bot):
         elif cmd == "shutdown":
             print("Shutting down...")
             asyncio.run_coroutine_threadsafe(bot.close(), bot.loop)
+        elif cmd == "reload-backup-data":
+            _do_restore_backup()
 _reboot_requested = False
 
 
 def main():
     parser = argparse.ArgumentParser(description="Bong Discord Bot")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--reload-backup-data", action="store_true", help="Restore all data files from .bak backups on startup")
     args = parser.parse_args()
 
     if args.debug:
@@ -195,6 +218,8 @@ def main():
         user_data.load_users()
         reminders.load_reminders()
         debug.log("Bot", f'Bot logged in as {bot.user}')
+        if _reload_backup:
+            _do_restore_backup()
         bot.loop.create_task(_setup_debugging())
 
     async def _setup_debugging():

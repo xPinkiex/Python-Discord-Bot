@@ -37,6 +37,7 @@ import bong_song_stats
 import bong_memory_helpers
 import debug
 import dm_approval
+import persist
 import reminders
 import user_data
 import voice_commands
@@ -450,7 +451,17 @@ async def run_tool_loop(bound_model, messages, image_attachments, text_attachmen
     Returns (result_text, tool_summaries) where tool_summaries is a list of
     short descriptions like "web_search(query)" for inclusion in chat history.
     """
+    total_input = 0
+    total_output = 0
+
+    def _tally(response):
+        nonlocal total_input, total_output
+        if response and response.usage_metadata:
+            total_input += response.usage_metadata.get("input_tokens", 0)
+            total_output += response.usage_metadata.get("output_tokens", 0)
+
     ai_response = await invoke_with_retry(bound_model, messages)
+    _tally(ai_response)
     messages.append(ai_response)
 
     iteration = 0
@@ -462,6 +473,7 @@ async def run_tool_loop(bound_model, messages, image_attachments, text_attachmen
             # Force the LLM to stop tool-calling and give a final response
             messages.append(HumanMessage(content="You have exceeded the maximum number of tool calls. Please respond to the user now without making any more tool calls."))
             ai_response = await invoke_with_retry(bound_model, messages)
+            _tally(ai_response)
             messages.append(ai_response)
             break
 
@@ -495,6 +507,7 @@ async def run_tool_loop(bound_model, messages, image_attachments, text_attachmen
 
         # Re-invoke the LLM with the tool results so it can decide what to do next
         ai_response = await invoke_with_retry(bound_model, messages)
+        _tally(ai_response)
         messages.append(ai_response)
 
     # Extract the final text from the last AI response
@@ -504,7 +517,12 @@ async def run_tool_loop(bound_model, messages, image_attachments, text_attachmen
     if not result_text.strip():
         debug.log("AI", "Empty response, retrying with thinking model")
         retry_response = await invoke_with_retry(base_model, messages)
+        _tally(retry_response)
         result_text = _extract_response_text(retry_response)
+
+    debug.log("Tokens", f"in={total_input} out={total_output} total={total_input + total_output}")
+    if bong_tools.current_user_id:
+        user_data.add_tokens(bong_tools.current_user_id, total_input + total_output, bong_tools.current_username or "")
 
     debug.log("AI", "Generating final response")
     if last_prompt_path:
@@ -1061,23 +1079,21 @@ class BongCog(commands.Cog):
         self.bot.loop.create_task(self._preload_channel())
         # Start the reminder checker background task
         self.reminder_task = self.bot.loop.create_task(self._check_reminders())
-        # Start the song stats periodic save task
-        self.song_stats_task = self.bot.loop.create_task(self._save_song_stats_periodically())
+        # Start the periodic persist flush task
+        self.persist_task = self.bot.loop.create_task(self._flush_persist_periodically())
 
-    async def _save_song_stats_periodically(self):
-        """Save song stats to disk every 60 seconds if they've changed."""
+    async def _flush_persist_periodically(self):
+        """Flush all persist stores to disk every 60 seconds if dirty."""
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
             await asyncio.sleep(60)
-            if bong_song_stats._song_stats_dirty:
-                bong_song_stats._save_song_stats()
+            persist.flush_all()
 
     async def cog_unload(self):
-        """Flush song stats to disk when the cog is unloaded (shutdown/reload)."""
-        if bong_song_stats._song_stats_dirty:
-            bong_song_stats._save_song_stats()
+        """Flush all persist stores to disk when the cog is unloaded (shutdown/reload)."""
+        persist.flush_all()
         self.reminder_task.cancel()
-        self.song_stats_task.cancel()
+        self.persist_task.cancel()
     
     async def _preload_channel(self):
         """Load recent message history from debug channels on startup so Bong has context."""

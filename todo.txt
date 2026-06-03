@@ -34,6 +34,7 @@ Bong Bot Todo
 - [x] Voice commands polish — respond in VC text channel, skip classifier on wake word, test different whisper model sizes
 
 ## Backlog
+- [ ] Per user token counting with a leaderboard like music. Maybe make a leaderboards.json where all the leaderboards are kept.
 - [ ] Code overhaul — move source to src/, break up bong_tools.py into separate modules (music, memory, reminders, web, voice, admin, etc.)
 - [ ] Per-tool call limit — allow only X runs of a specific tool in a single tool loop chain
 - [ ] Loop/shuffle queue mode — loop the entire queue if >1 song; shuffle the queue if >1 song instead of pulling from the whole folder

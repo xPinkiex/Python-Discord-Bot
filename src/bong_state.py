@@ -240,7 +240,7 @@ def list_reminders_tool() -> str:
 
 @tool
 def bot_stats() -> str:
-    """Get statistics about the bot: uptime, memory count, known users, reminders, and top 3 most-played songs."""
+    """Get statistics about the bot: uptime, memory count, known users, reminders, top 3 most-played songs, and top 3 users by tokens."""
     lines = []
     now = datetime.now()
     if bong_tools.start_time:
@@ -268,6 +268,14 @@ def bot_stats() -> str:
         lines.append("Top songs:\n" + "\n".join(top_lines))
     else:
         lines.append("Top songs: none yet")
+    total_tokens = sum(d.get("tokens", 0) for d in user_data._user_data.values())
+    lines.append(f"Total tokens used: {total_tokens:,}")
+    top_users = user_data.get_top_users_by_tokens(3)
+    if top_users:
+        top_user_lines = [f"  {i+1}. {name or uid} ({count:,} tokens)" for i, (uid, name, count) in enumerate(top_users)]
+        lines.append("Top users:\n" + "\n".join(top_user_lines))
+    else:
+        lines.append("Top users: none yet")
     return "\n".join(lines)
 
 

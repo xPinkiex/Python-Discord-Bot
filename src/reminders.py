@@ -18,9 +18,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BONG_DATA = PROJECT_ROOT / "bong_data"
 BONG_USER_DATA = PROJECT_ROOT / "bong_user_data"
 
-_REMINDERS_FILE = BONG_USER_DATA / "reminders.json"
+import persist
 
-# In-memory list of active reminders
+_STORE_PATH = BONG_USER_DATA / "reminders.json"
+_store = persist.PersistStore(_STORE_PATH, default=[])
+persist.register(_store)
+
+# In-memory list of active reminders (alias to _store.data after load)
 reminders: list[dict] = []
 
 # Pending reminders that the cog should deliver (set by the tool, read by the cog)
@@ -30,26 +34,16 @@ pending_reminders: list[dict] = []
 def load_reminders():
     """Load reminders from disk, removing any that are already past due."""
     global reminders
-    reminders = []
-    try:
-        if _REMINDERS_FILE.exists():
-            with open(_REMINDERS_FILE, "r") as f:
-                all_reminders = json.load(f)
-            now = datetime.now().timestamp()
-            reminders = [r for r in all_reminders if r.get("due_at", 0) > now]
-            # Save back to clean up expired ones
-            save_reminders()
-    except Exception:
-        reminders = []
+    _store.load()
+    now = datetime.now().timestamp()
+    reminders[:] = [r for r in _store.data if r.get("due_at", 0) > now]
+    _store.data = reminders
+    _store.mark_dirty()
 
 
 def save_reminders():
-    """Persist reminders to disk."""
-    try:
-        with open(_REMINDERS_FILE, "w") as f:
-            json.dump(reminders, f, indent=2)
-    except Exception:
-        pass
+    """Mark reminders as needing a flush to disk."""
+    _store.mark_dirty()
 
 
 def add_reminder(user_id: int, username: str, message: str, due_at: float) -> dict:
@@ -62,7 +56,7 @@ def add_reminder(user_id: int, username: str, message: str, due_at: float) -> di
     }
     reminders.append(reminder)
     reminders.sort(key=lambda r: r["due_at"])
-    save_reminders()
+    _store.mark_dirty()
     return reminder
 
 
@@ -82,7 +76,7 @@ def cancel_reminder(user_id: int, query: str = "") -> str:
         reminder = user_reminders[-1]
 
     reminders.remove(reminder)
-    save_reminders()
+    _store.mark_dirty()
     due_str = datetime.fromtimestamp(reminder["due_at"]).strftime("%H:%M on %Y-%m-%d")
     return f"Cancelled reminder: '{reminder['message']}' (was due at {due_str})"
 
