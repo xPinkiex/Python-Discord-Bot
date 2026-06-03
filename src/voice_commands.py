@@ -43,7 +43,7 @@ _MAX_DEBUG_WAVS = 10
 _model_lock = Lock()
 
 _whisper_model = None
-_WHISPER_MODEL_SIZE = "base"
+_WHISPER_MODEL_SIZE = "small"
 _WHISPER_DOWNLOAD_ROOT = str(BONG_DATA / "whisper_models")
 
 _oww_shared_model = None
