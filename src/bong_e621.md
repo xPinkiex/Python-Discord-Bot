@@ -53,7 +53,7 @@ Values are `last_post_id` (int) or `null` for first poll. File is managed via `p
 ```json
 {
   "273761843544064000": {
-    "tier": "admin",
+    "allowed": ["admin"],
     "timezone": 2,
     "e621_subs": ["protogen", "species:wolf"]
   }
@@ -67,8 +67,8 @@ Managed by `user_data.py` helpers: `get_e621_subs`, `add_e621_sub`, `remove_e621
 
 | Tool | Args | Purpose |
 |---|---|---|
-| `e621_subscribe` | `tags: str` | Subscribe to tag search, validate against e621 API, get DMs for new posts. Requires authorized+ tier. |
-| `e621_unsubscribe` | `tags: str` | Unsubscribe from tag search (must match exactly). Requires authorized+ tier. |
+| `e621_subscribe` | `tags: str` | Subscribe to tag search, validate against e621 API, get DMs for new posts. Requires `e621` permission tag. |
+| `e621_unsubscribe` | `tags: str` | Unsubscribe from tag search (must match exactly). Requires `e621` permission tag. |
 | `e621_list_subscriptions` | *(none)* | List user's active e621 subscriptions |
 | `e621_search` | `tags: str` | One-shot search, returns up to 5 posts with links |
 
@@ -143,7 +143,7 @@ Validation warns but doesn't block: unknown tags and zero-post tags produce warn
 - **Per-user subs in `users.json`**: Uses existing `user_data` infrastructure. No separate per-user store.
 - **Silent first poll**: New tags record the latest post ID without DMing. Prevents spam on fresh subscriptions.
 - **Validate but don't block**: Unknown/zero-post tags produce warnings but the subscription still goes through. The tag might be valid but new, or the API might be flaky.
-- **Permission gating**: `e621_subscribe` and `e621_unsubscribe` require `is_authorized()` (admin or authorized tier). `e621_list_subscriptions` and `e621_search` are unrestricted.
+- **Permission gating**: `e621_subscribe` and `e621_unsubscribe` require `has_permission(user_id, "e621")`. `e621_list_subscriptions` and `e621_search` also require the `e621` tag. The `admin` tag implies all other tags.
 - **Lazy `bong_tools` import**: `@tool` functions import `bong_tools` inside the function body to avoid circular import (`bong_tools → bong_e621.tools → bong_tools`).
 - **Persist dirty-flag batching**: `save_subscriptions()` calls `_store.mark_dirty()` — actual disk write happens in the 60s persist flush cycle, not per-subscription.
 - **Tag registry cleanup**: `cleanup_tag_registry()` removes orphan tags (no subscribers left). Also called implicitly by `remove_subscription()` when the last subscriber leaves.

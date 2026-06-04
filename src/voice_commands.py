@@ -431,7 +431,7 @@ class BongVoiceSink(AudioSink):
         is_fake = isinstance(data.packet, FakePacket)
 
         if not is_fake:
-            if user_data.is_authorized(user_id):
+            if user_data.has_permission(user_id, "vc_commands"):
                 resampled = self._resample_to_whisper_format(pcm_data)
                 self._oww_buffers.setdefault(user_id, bytearray()).extend(resampled)
 
@@ -511,8 +511,8 @@ class BongVoiceSink(AudioSink):
                         if pcm_data is None:
                             continue
 
-                        if not user_data.is_authorized(user_id):
-                            _vlog(f"[silence_checker] Ignoring unauthorized user {user_id}")
+                        if not user_data.has_permission(user_id, "vc_commands"):
+                            _vlog(f"[silence_checker] Ignoring user {user_id} without vc_commands permission")
                             continue
 
                         _vlog(f"[silence_checker] Queuing transcription for {user_id} ({duration:.1f}s)")

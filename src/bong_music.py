@@ -12,6 +12,13 @@ from ddgs import DDGS
 from yt_dlp import YoutubeDL
 import bong_tools
 import bong_song_stats
+import user_data
+
+
+def _check_music():
+    if not user_data.has_permission(bong_tools.current_user_id, "music"):
+        return "You don't have permission to use music commands. Ask an admin to grant you the music tag."
+    return None
 
 
 def _fuzzy_match_music(files, name):
@@ -29,10 +36,13 @@ def _requires_voice(func):
 
 @tool
 def download_music(query: str) -> str:
-    """Download an mp3 audio file. Accepts either a YouTube URL or a song name. If given a song name, automatically searches YouTube for it. The current music library is listed above — check it before downloading, and if the song is already there use play_audio instead.
+    """Download an mp3 audio file. Accepts either a YouTube URL or a song name. If given a song name, automatically searches YouTube for it. The current music library is listed above — check it before downloading, and if the song is already there use play_audio instead. Requires the music permission tag.
     Args:
         query: A YouTube URL or a song name to search for on YouTube (e.g. "Jersey by Mayday Parade" or "https://youtube.com/watch?v=...").
     """
+    denied = _check_music()
+    if denied:
+        return denied
     bong_tools.refresh_music_library()
 
     is_url = "youtube.com" in query or "youtu.be" in query
@@ -107,8 +117,11 @@ def download_music(query: str) -> str:
 
 @tool
 def list_music() -> str:
-    """List all downloaded mp3 files in the saved_sounds folder. Use this when the user wants to browse or play music. The full library is provided in context — use the index numbers to select tracks with play_audio.
+    """List all downloaded mp3 files in the saved_sounds folder. Use this when the user wants to browse or play music. The full library is provided in context — use the index numbers to select tracks with play_audio. Requires the music permission tag.
     """
+    denied = _check_music()
+    if denied:
+        return denied
     bong_tools.refresh_music_library()
     files = bong_tools.music_library
     if not files:
@@ -118,10 +131,13 @@ def list_music() -> str:
 
 @tool
 def search_music(query: str) -> str:
-    """Search the music library by name. Use this when the user wants to play a song and you need to find its exact index. Always use this before play_audio if the user mentions a song by name instead of an index number.
+    """Search the music library by name. Use this when the user wants to play a song and you need to find its exact index. Always use this before play_audio if the user mentions a song by name instead of an index number. Requires the music permission tag.
     Args:
         query: Part of the song name to search for (e.g. "paradise", "mayday", "jersey").
     """
+    denied = _check_music()
+    if denied:
+        return denied
     bong_tools.refresh_music_library()
     files = bong_tools.music_library
     if not files:
@@ -137,11 +153,14 @@ def search_music(query: str) -> str:
 @tool
 @_requires_voice
 def play_audio(index: int = -1, name: str = "") -> str:
-    """Play a downloaded mp3 file in the voice channel the user is currently in. If something is already playing, the song is added to the queue. Only works if the user is in a voice channel. You can provide either an index number from list_music, or a song name to fuzzy-match against the library. Always use search_music first if the user gives a song name.
+    """Play a downloaded mp3 file in the voice channel the user is currently in. If something is already playing, the song is added to the queue. Only works if the user is in a voice channel. You can provide either an index number from list_music, or a song name to fuzzy-match against the library. Always use search_music first if the user gives a song name. Requires the music permission tag.
     Args:
         index: The index number of the track from list_music (e.g. 0, 1, 2). Use -1 if providing a name instead.
         name: A song name to fuzzy-match against the library. Only used if index is -1 or not provided.
     """
+    denied = _check_music()
+    if denied:
+        return denied
     bong_tools.refresh_music_library()
     files = bong_tools.music_library
     if not files:
@@ -189,8 +208,11 @@ def play_audio(index: int = -1, name: str = "") -> str:
 @tool
 @_requires_voice
 def pause_audio() -> str:
-    """Pause the currently playing audio in voice chat. Only use this if the user is in a voice channel — if they are not, tell them to join one and do not call this tool.
+    """Pause the currently playing audio in voice chat. Requires the music permission tag.
     """
+    denied = _check_music()
+    if denied:
+        return denied
     bong_tools.pending_pause = True
     return "Pausing audio."
 
@@ -198,8 +220,11 @@ def pause_audio() -> str:
 @tool
 @_requires_voice
 def resume_audio() -> str:
-    """Resume paused audio in voice chat. Only use this if the user is in a voice channel — if they are not, tell them to join one and do not call this tool.
+    """Resume paused audio in voice chat. Requires the music permission tag.
     """
+    denied = _check_music()
+    if denied:
+        return denied
     bong_tools.pending_resume = True
     return "Resuming audio."
 
@@ -207,8 +232,11 @@ def resume_audio() -> str:
 @tool
 @_requires_voice
 def stop_audio() -> str:
-    """Stop audio playback in voice chat entirely and clear the song queue, loop, and shuffle state. Only use this if the user is in a voice channel — if they are not, tell them to join one and do not call this tool.
+    """Stop audio playback in voice chat entirely and clear the song queue, loop, and shuffle state. Requires the music permission tag.
     """
+    denied = _check_music()
+    if denied:
+        return denied
     bong_tools.pending_stop = True
     bong_tools.song_queue.clear()
     bong_tools.loop_enabled = False
@@ -221,8 +249,11 @@ def stop_audio() -> str:
 @tool
 @_requires_voice
 def skip_audio() -> str:
-    """Skip the currently playing song and play the next one in the queue. If loop is on, wraps around. If shuffle is on, picks randomly. Only use this if the user is in a voice channel.
+    """Skip the currently playing song and play the next one in the queue. Requires the music permission tag.
     """
+    denied = _check_music()
+    if denied:
+        return denied
     bong_tools.pending_skip = True
     next_track, _desc = bong_tools.advance_queue()
     if next_track:
@@ -236,10 +267,13 @@ def skip_audio() -> str:
 @tool
 @_requires_voice
 def loop_audio(enabled: bool) -> str:
-    """Toggle loop mode. When enabled with 1 song playing, loops that track. When enabled with 2+ songs (current + queue), loops the entire queue. Loop and shuffle can be combined — enabling both on a queue plays it in shuffled order endlessly.
+    """Toggle loop mode. Requires the music permission tag.
     Args:
         enabled: True to enable loop, False to disable.
     """
+    denied = _check_music()
+    if denied:
+        return denied
     if not enabled:
         bong_tools.loop_enabled = False
         bong_tools.loop_track = None
@@ -269,10 +303,13 @@ def loop_audio(enabled: bool) -> str:
 @tool
 @_requires_voice
 def music_shuffle_enabled(enabled: bool) -> str:
-    """Enable or disable shuffle mode. Only use this if the user is in a voice channel — if they are not, tell them to join one and do not call this tool. When enabled with a queue, picks the next song randomly. When enabled without a queue, picks a random song from the library. Can be combined with loop for a shuffled queue loop.
+    """Enable or disable shuffle mode. Requires the music permission tag.
     Args:
         enabled: True to enable shuffle, False to disable shuffle.
     """
+    denied = _check_music()
+    if denied:
+        return denied
     bong_tools.shuffle_enabled = enabled
     state = "enabled" if enabled else "disabled"
     return f"Shuffle mode is now {state}."
@@ -280,8 +317,10 @@ def music_shuffle_enabled(enabled: bool) -> str:
 
 @tool
 def queue() -> str:
-    """Show the current song queue. Lists all songs waiting to play after the current track, plus the currently playing song. Use this when someone asks what's in the queue or what's coming up next.
-    """
+    """Show the current song queue. Requires the music permission tag."""
+    denied = _check_music()
+    if denied:
+        return denied
     lines = []
     if bong_tools.current_track:
         lines.append(f"Now playing: {Path(bong_tools.current_track).stem}")
@@ -311,8 +350,11 @@ def queue() -> str:
 @tool
 @_requires_voice
 def clear_queue() -> str:
-    """Clear all songs from the queue without stopping the currently playing song. If queue loop is active, it is also disabled. Only use this if the user is in a voice channel — if they are not, tell them to join one and do not call this tool.
+    """Clear all songs from the queue without stopping the currently playing song. Requires the music permission tag.
     """
+    denied = _check_music()
+    if denied:
+        return denied
     count = len(bong_tools.song_queue)
     bong_tools.song_queue.clear()
     if bong_tools.loop_enabled and bong_tools.queue_snapshot:

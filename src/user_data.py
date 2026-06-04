@@ -1,10 +1,17 @@
 # user_data.py — Per-user settings persisted to users.json
 #
-# Stores permission tier, timezone, and other per-user data.
+# Stores permission tags, timezone, and other per-user data.
 # The owner (Eve) is always guaranteed admin even if the file is missing.
 #
+# Permission tags: "llm", "llm_fast", "music", "vc_commands", "e621", "admin"
+#   "admin" implies all other tags.
+#   "llm_fast" implies "llm" for permission checks but also skips cooldown.
+#
 # users.json format:
-#   {"273761843544064000": {"tier": "admin", "timezone": 2}, ...}
+#   {"273761843544064000": {"allowed": ["admin"], "timezone": 2}, ...}
+#
+# Migration: old "tier" field is converted to empty "allowed" on load.
+# OWNER_ID is always guaranteed ["admin"].
 
 from pathlib import Path
 import sys
@@ -27,6 +34,9 @@ _user_data: dict[int, dict] = {}
 # The owner who receives approval requests — always admin
 OWNER_ID = 273761843544064000
 
+# Valid permission tags
+VALID_TAGS = {"llm", "llm_fast", "music", "vc_commands", "e621", "admin"}
+
 
 def load_users():
     """Load user data from disk. Owner is always guaranteed admin."""
@@ -37,41 +47,77 @@ def load_users():
     for uid_str, value in raw.items():
         uid = int(uid_str)
         if isinstance(value, str):
-            converted[uid] = {"tier": value}
+            converted[uid] = {"allowed": []}
         else:
             converted[uid] = dict(value)
-    converted.setdefault(OWNER_ID, {})["tier"] = "admin"
+    converted.setdefault(OWNER_ID, {})["allowed"] = ["admin"]
     _store.data = converted
     _store.mark_dirty()
     _user_data = _store.data
 
 
-def get_tier(user_id: int) -> str | None:
-    """Get the permission tier for a user, or None if unknown."""
+def has_permission(user_id: int, tag: str) -> bool:
+    """Check if a user has a specific permission tag.
+    
+    admin implies all other tags. llm_fast implies llm.
+    Returns False if user is unknown or doesn't have the tag.
+    """
     entry = _user_data.get(user_id)
     if entry is None:
-        return None
-    return entry.get("tier")
+        return False
+    allowed = entry.get("allowed", [])
+    if "admin" in allowed:
+        return True
+    if tag == "llm" and "llm_fast" in allowed:
+        return True
+    return tag in allowed
 
 
 def is_admin(user_id: int) -> bool:
-    """Check if a user has admin tier."""
-    return get_tier(user_id) == "admin"
+    """Check if a user has the admin tag. OWNER_ID is always admin."""
+    if user_id == OWNER_ID:
+        return True
+    return has_permission(user_id, "admin")
 
 
-def is_authorized(user_id: int) -> bool:
-    """Check if a user has admin or authorized tier."""
-    return get_tier(user_id) in ("admin", "authorized")
+def get_permissions(user_id: int) -> list[str]:
+    """Get a user's permission tags. Returns empty list if unknown."""
+    entry = _user_data.get(user_id)
+    if entry is None:
+        return []
+    return entry.get("allowed", [])
 
 
-def is_known(user_id: int) -> bool:
-    """Check if a user is in any tier."""
-    return user_id in _user_data
+def add_permission(user_id: int, tag: str):
+    """Add a permission tag for a user. Creates entry if user doesn't exist."""
+    if tag not in VALID_TAGS:
+        return
+    entry = _user_data.setdefault(user_id, {})
+    allowed = entry.get("allowed", [])
+    if tag not in allowed:
+        allowed.append(tag)
+        entry["allowed"] = allowed
+        _store.mark_dirty()
 
 
-def set_tier(user_id: int, tier: str):
-    """Set the permission tier for a user and persist."""
-    _user_data.setdefault(user_id, {})["tier"] = tier
+def remove_permission(user_id: int, tag: str):
+    """Remove a permission tag from a user. Returns True if tag was found and removed."""
+    entry = _user_data.get(user_id)
+    if entry is None:
+        return False
+    allowed = entry.get("allowed", [])
+    if tag in allowed:
+        allowed.remove(tag)
+        entry["allowed"] = allowed
+        _store.mark_dirty()
+        return True
+    return False
+
+
+def set_permissions(user_id: int, tags: list[str]):
+    """Set a user's permission tags to exactly the given list. Creates entry if needed."""
+    entry = _user_data.setdefault(user_id, {})
+    entry["allowed"] = [t for t in tags if t in VALID_TAGS]
     _store.mark_dirty()
 
 

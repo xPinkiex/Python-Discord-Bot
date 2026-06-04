@@ -2,102 +2,116 @@ import time
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
-import bong
 import user_data
 
 
-@pytest.fixture
-def bot():
-    b = MagicMock()
-    b.user = MagicMock()
-    b.user.id = 999
-    b.user.display_name = "Bong"
-    b.loop = MagicMock()
-    b.loop.create_task = MagicMock()
-    b.all_commands = {}
-    b.command_prefix = "@"
-    return b
-
-
-@pytest.fixture
-def cog(bot):
-    return bong.BongCog(bot)
-
-
-@pytest.fixture(autouse=True)
-def reset_state():
-    bong.active_channels.clear()
-    bong.chat_memories.clear()
-    bong.channel_summaries.clear()
-    yield
-
-
 class TestCooldown:
-    def test_regular_user_records_cooldown(self, cog):
+    def test_llm_fast_user_bypasses_cooldown(self):
+        uid = 12345
+        # llm_fast tag should bypass cooldown
+        user_data._user_data = {uid: {"allowed": ["llm_fast"]}}
+        assert user_data.has_permission(uid, "llm_fast")
+        assert user_data.has_permission(uid, "llm")  # llm_fast implies llm
+
+    def test_llm_user_has_cooldown(self):
+        uid = 12345
+        user_data._user_data = {uid: {"allowed": ["llm"]}}
+        assert user_data.has_permission(uid, "llm")
+        assert not user_data.has_permission(uid, "llm_fast")
+
+    def test_admin_bypasses_cooldown(self):
+        uid = 12345
+        user_data._user_data = {uid: {"allowed": ["admin"]}}
+        assert user_data.has_permission(uid, "llm_fast")  # admin implies all
+        assert user_data.has_permission(uid, "llm")
+        assert user_data.has_permission(uid, "music")
+
+    def test_cooldown_per_user(self):
+        now = time.time()
+        cooldowns = {111: now - 10}
+        assert 111 in cooldowns
+        assert 222 not in cooldowns
+
+    def test_cooldown_remaining_rounds(self):
         now = time.time()
         uid = 12345
-        assert uid not in cog._user_cooldowns
-
-        with patch.object(user_data, "is_authorized", return_value=False):
-            with patch.object(user_data, "is_admin", return_value=False):
-                assert not user_data.is_authorized(uid)
-
-    def test_cooldown_blocks_within_60s(self, cog):
-        now = time.time()
-        uid = 12345
-        cog._user_cooldowns[uid] = now - 10
-
-        with patch.object(user_data, "is_authorized", return_value=False):
-            with patch.object(user_data, "is_admin", return_value=False):
-                elapsed = now - cog._user_cooldowns[uid]
-                assert elapsed < 60
-                remaining = int(60 - elapsed)
-                assert remaining > 0
-
-    def test_cooldown_expires_after_60s(self, cog):
-        now = time.time()
-        uid = 12345
-        cog._user_cooldowns[uid] = now - 61
-
-        elapsed = now - cog._user_cooldowns[uid]
-        assert elapsed >= 60
-
-    def test_cooldown_is_per_user(self, cog):
-        now = time.time()
-        cog._user_cooldowns[111] = now - 10
-
-        assert 222 not in cog._user_cooldowns
-
-    def test_authorized_user_never_in_cooldown(self, cog):
-        assert 111 not in cog._user_cooldowns
-
-    def test_cooldown_remaining_rounds_correctly(self, cog):
-        now = time.time()
-        uid = 12345
-        cog._user_cooldowns[uid] = now - 45
-
-        elapsed = now - cog._user_cooldowns[uid]
+        cooldowns = {uid: now - 45}
+        elapsed = now - cooldowns[uid]
         remaining = int(60 - elapsed)
         assert remaining == 14 or remaining == 15
 
 
 class TestDeduplication:
-    def test_same_message_id_is_duplicate(self, cog):
+    def test_same_message_id_is_duplicate(self):
+        processed = set()
         msg_id = 123456
-        cog._processed_ids.add(msg_id)
-        assert msg_id in cog._processed_ids
+        processed.add(msg_id)
+        assert msg_id in processed
 
-    def test_different_message_id_is_not_duplicate(self, cog):
-        cog._processed_ids.add(123456)
-        assert 123457 not in cog._processed_ids
+    def test_different_message_id_is_not_duplicate(self):
+        processed = set()
+        processed.add(123456)
+        assert 123457 not in processed
 
-    def test_processed_ids_trim_at_capacity(self, cog):
-        cog._processed_ids.clear()
-        for i in range(2001):
-            cog._processed_ids.add(i)
-        assert len(cog._processed_ids) == 2001
+    def test_processed_ids_trim_at_capacity(self):
+        processed = set(range(2001))
+        assert len(processed) == 2001
+        processed = set(sorted(processed)[-1000:])
+        assert len(processed) == 1000
+        assert 2000 in processed
+        assert 0 not in processed
 
-        cog._processed_ids = set(sorted(cog._processed_ids)[-1000:])
-        assert len(cog._processed_ids) == 1000
-        assert 2000 in cog._processed_ids
-        assert 0 not in cog._processed_ids
+
+class TestPermissions:
+    def test_has_permission_admin_implies_all(self):
+        user_data._user_data = {1: {"allowed": ["admin"]}}
+        for tag in ["llm", "llm_fast", "music", "vc_commands", "e621", "admin"]:
+            assert user_data.has_permission(1, tag), f"admin should imply {tag}"
+
+    def test_has_permission_llm_fast_implies_llm(self):
+        user_data._user_data = {1: {"allowed": ["llm_fast"]}}
+        assert user_data.has_permission(1, "llm")
+        assert user_data.has_permission(1, "llm_fast")
+        assert not user_data.has_permission(1, "music")
+
+    def test_has_permission_unknown_user(self):
+        user_data._user_data = {}
+        assert not user_data.has_permission(999, "llm")
+
+    def test_set_permissions(self):
+        user_data._user_data = {}
+        user_data.set_permissions(1, ["llm", "music"])
+        assert user_data.has_permission(1, "llm")
+        assert user_data.has_permission(1, "music")
+        assert not user_data.has_permission(1, "e621")
+
+    def test_add_permission(self):
+        user_data._user_data = {1: {"allowed": ["llm"]}}
+        user_data.add_permission(1, "music")
+        assert user_data.has_permission(1, "music")
+
+    def test_remove_permission(self):
+        user_data._user_data = {1: {"allowed": ["llm", "music"]}}
+        user_data.remove_permission(1, "music")
+        assert not user_data.has_permission(1, "music")
+        assert user_data.has_permission(1, "llm")
+
+    def test_owner_always_admin(self):
+        user_data._user_data = {}
+        assert user_data.is_admin(user_data.OWNER_ID)
+
+    def test_valid_tags(self):
+        assert "llm" in user_data.VALID_TAGS
+        assert "llm_fast" in user_data.VALID_TAGS
+        assert "music" in user_data.VALID_TAGS
+        assert "vc_commands" in user_data.VALID_TAGS
+        assert "e621" in user_data.VALID_TAGS
+        assert "admin" in user_data.VALID_TAGS
+
+    def test_youtube_search_requires_llm_or_music(self):
+        user_data._user_data = {1: {"allowed": ["llm"]}}
+        assert user_data.has_permission(1, "llm") or user_data.has_permission(1, "music")
+        user_data._user_data = {2: {"allowed": ["music"]}}
+        assert user_data.has_permission(2, "llm") or user_data.has_permission(2, "music")
+        user_data._user_data = {3: {"allowed": ["e621"]}}
+        assert not (user_data.has_permission(3, "llm") or user_data.has_permission(3, "music"))

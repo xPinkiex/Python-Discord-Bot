@@ -7,8 +7,10 @@ from langchain_core.tools import tool
 from langchain_ollama.chat_models import ChatOllama
 from langchain_core.messages import HumanMessage
 from ddgs import DDGS
+import bong_tools
 import bong_memory_helpers
 from llm_utils import _extract_response_text
+import user_data
 
 
 _SUMMARIZE_PROMPT = (
@@ -23,10 +25,12 @@ _SUMMARIZE_MODEL = ChatOllama(model="gemma3:12b-cloud", temperature=0.3, num_pre
 
 @tool
 def web_search(query: str) -> str:
-    """Search the web for information. Use this when you need to look up facts, news, or any information you don't know.
+    """Search the web for information. Use this when you need to look up facts, news, or any information you don't know. Requires the llm permission tag.
     Args:
         query: The search query string.
     """
+    if not user_data.has_permission(bong_tools.current_user_id, "llm"):
+        return "You don't have permission to use web search. Ask an admin to grant you the llm tag."
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=3))
@@ -39,10 +43,12 @@ def web_search(query: str) -> str:
 
 @tool
 def youtube_search(query: str) -> str:
-    """Search YouTube for videos. Use this when the user wants to find a YouTube video or when you need to find a YouTube URL to download audio from.
+    """Search YouTube for videos. Use this when the user wants to find a YouTube video or when you need to find a YouTube URL to download audio from. Available with the llm or music permission tag.
     Args:
         query: The search query string.
     """
+    if not (user_data.has_permission(bong_tools.current_user_id, "llm") or user_data.has_permission(bong_tools.current_user_id, "music")):
+        return "You don't have permission to search YouTube. Ask an admin to grant you the llm or music tag."
     try:
         with DDGS() as ddgs:
             results = list(ddgs.videos(query, max_results=3))
@@ -63,10 +69,12 @@ def youtube_search(query: str) -> str:
 
 @tool
 def summarize_url(url: str) -> str:
-    """Summarize a web page. Use this when someone shares a URL and you want to tell them what it's about, or when you need to look up information from a URL.
+    """Summarize a web page. Use this when someone shares a URL and you want to tell them what it's about, or when you need to look up information from a URL. Requires the llm permission tag.
     Args:
         url: The full URL to summarize (e.g. "https://example.com/article").
     """
+    if not user_data.has_permission(bong_tools.current_user_id, "llm"):
+        return "You don't have permission to summarize URLs. Ask an admin to grant you the llm tag."
     import requests
     from lxml import html as lxml_html
 

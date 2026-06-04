@@ -22,12 +22,33 @@ def _format_utc_offset(offset: float) -> str:
     return f"UTC{sign}{hours}"
 
 
+def _check_llm():
+    if not user_data.has_permission(bong_tools.current_user_id, "llm"):
+        return "You don't have permission to use this feature. Ask an admin to grant you the llm tag."
+    return None
+
+
+def _check_music():
+    if not user_data.has_permission(bong_tools.current_user_id, "music"):
+        return "You don't have permission to use music commands. Ask an admin to grant you the music tag."
+    return None
+
+
+def _check_vc():
+    if not user_data.has_permission(bong_tools.current_user_id, "vc_commands"):
+        return "You don't have permission to use voice commands. Ask an admin to grant you the vc_commands tag."
+    return None
+
+
 @tool
 def react(emojis: str) -> str:
-    """React to the user's message with one or more emojis. Use this to express emotion or acknowledge the message.
+    """React to the user's message with one or more emojis. Use this to express emotion or acknowledge the message. Requires the llm permission tag.
     Args:
         emojis: One or more emoji characters to react with, separated by spaces (e.g. ❤️, 👍 😂, 🤔 💡 🎉)
     """
+    denied = _check_llm()
+    if denied:
+        return denied
     for emoji in emojis.split():
         bong_tools.pending_reactions.append(emoji)
     return f"Reacted with {emojis}"
@@ -35,18 +56,24 @@ def react(emojis: str) -> str:
 
 @tool
 def join_voice(userID: int) -> str:
-    """Join the voice channel that the user is currently in. Use this when the user wants you to join their voice channel.
+    """Join the voice channel that the user is currently in. Use this when the user wants you to join their voice channel. Requires the music permission tag.
     Args:
         userID: User ID of the person you want to join voice chat with.
     """
+    denied = _check_music()
+    if denied:
+        return denied
     bong_tools.pending_join_voice = userID
     return "Joining voice channel"
 
 
 @tool
 def leave_voice() -> str:
-    """Disconnect from the current voice channel. Use this when the user wants you to leave their voice channel.
+    """Disconnect from the current voice channel. Use this when the user wants you to leave their voice channel. Requires the music permission tag.
     """
+    denied = _check_music()
+    if denied:
+        return denied
     bong_tools.pending_leave_voice = True
     return "Leaving voice channel"
 
@@ -55,6 +82,9 @@ def leave_voice() -> str:
 def list_images() -> str:
     """List all saved images in the saved_images folder. Use this when the user wants to browse or view saved images. The full library is provided in context — use the index numbers to select images with send_image.
     """
+    denied = _check_llm()
+    if denied:
+        return denied
     bong_tools.refresh_image_library()
     files = bong_tools.image_library
     if not files:
@@ -68,6 +98,9 @@ def send_image(index: int) -> str:
     Args:
         index: The index number of the image from list_images (e.g. 0, 1, 2).
     """
+    denied = _check_llm()
+    if denied:
+        return denied
     bong_tools.refresh_image_library()
     files = bong_tools.image_library
     if not files:
@@ -82,6 +115,9 @@ def send_image(index: int) -> str:
 def list_texts() -> str:
     """List all saved text files in the saved_texts folder. Use this when the user wants to browse or view saved text files. The full library is provided in context — use the index numbers to select files with send_text.
     """
+    denied = _check_llm()
+    if denied:
+        return denied
     bong_tools.refresh_text_library()
     files = bong_tools.text_library
     if not files:
@@ -95,6 +131,9 @@ def send_text(index: int) -> str:
     Args:
         index: The index number of the text file from list_texts (e.g. 0, 1, 2).
     """
+    denied = _check_llm()
+    if denied:
+        return denied
     bong_tools.refresh_text_library()
     files = bong_tools.text_library
     if not files:
@@ -279,12 +318,13 @@ def shutdown() -> str:
 
 @tool
 def start_listening(userID: int) -> str:
-    """Start listening for voice commands in the voice channel. The bot will listen for the wake word 'hey bong' and process voice commands from authorized users. Only use this if the user is authorized and the bot is already in a voice channel — if not in a voice channel, tell the user to join one and have the bot join first. Do NOT call this more than once per conversation turn.
+    """Start listening for voice commands in the voice channel. The bot will listen for the wake word 'hey bong' and process voice commands from users with the vc_commands permission. Requires the vc_commands permission tag.
     Args:
         userID: The Discord user ID of the person who wants to start voice commands (used to confirm authorization).
     """
-    if not user_data.is_authorized(bong_tools.current_user_id):
-        return "Cannot start listening: the user is not authorized for voice commands. Only authorized and admin users can use this feature."
+    denied = _check_vc()
+    if denied:
+        return denied
     if bong_tools.pending_start_listening is not None:
         return "Voice command listener is already being started. Do not call this tool again."
     bong_tools.pending_start_listening = userID
@@ -293,9 +333,11 @@ def start_listening(userID: int) -> str:
 
 @tool
 def stop_listening() -> str:
-    """Stop listening for voice commands in the voice channel. Use this ONLY when the user wants to disable voice command mode — the bot will stop detecting wake words and processing voice input. Only use this if the user is authorized. Do NOT use this to stop music playback or disconnect from voice."""
-    if not user_data.is_authorized(bong_tools.current_user_id):
-        return "Cannot stop listening: the user is not authorized. Only authorized and admin users can use this feature."
+    """Stop listening for voice commands in the voice channel. Use this ONLY when the user wants to disable voice command mode — the bot will stop detecting wake words and processing voice input. Requires the vc_commands permission tag. Do NOT use this to stop music playback or disconnect from voice.
+    """
+    denied = _check_vc()
+    if denied:
+        return denied
     bong_tools.pending_stop_listening = True
     return "Stopping voice command listener"
 

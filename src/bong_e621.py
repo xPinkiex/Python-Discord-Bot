@@ -252,14 +252,14 @@ def e621_subscribe(tags: str) -> str:
     user_id = _bt.current_user_id
     if not user_id:
         return "Cannot determine your user ID."
-    if not user_data.is_authorized(user_id):
-        return "You are not authorized to subscribe to e621 tags. Ask an admin to authorize you."
+    if not user_data.has_permission(user_id, "e621"):
+        return "You don't have access to e621 subscriptions. Ask an admin to grant you the e621 tag."
     return add_subscription(user_id, tags)
 
 
 @tool
 def e621_unsubscribe(tags: str) -> str:
-    """Unsubscribe from an e621 tag search. Stops DM notifications for these tags. Only authorized users can use this.
+    """Unsubscribe from an e621 tag search. Stops DM notifications for these tags. Requires the e621 permission tag.
     Args:
         tags: The tag search query to unsubscribe from (must match exactly).
     """
@@ -267,27 +267,35 @@ def e621_unsubscribe(tags: str) -> str:
     user_id = _bt.current_user_id
     if not user_id:
         return "Cannot determine your user ID."
-    if not user_data.is_authorized(user_id):
-        return "You are not authorized to manage e621 subscriptions."
+    if not user_data.has_permission(user_id, "e621"):
+        return "You don't have access to e621 subscriptions. Ask an admin to grant you the e621 tag."
     return remove_subscription(user_id, tags)
 
 
 @tool
 def e621_list_subscriptions() -> str:
-    """List all your active e621 tag subscriptions."""
+    """List all your active e621 tag subscriptions. Requires the e621 permission tag."""
     import bong_tools as _bt
     user_id = _bt.current_user_id
     if not user_id:
         return "Cannot determine your user ID."
+    if not user_data.has_permission(user_id, "e621"):
+        return "You don't have access to e621. Ask an admin to grant you the e621 tag."
     return list_subscriptions(user_id)
 
 
 @tool
 def e621_search(tags: str) -> str:
-    """Search e621 for posts matching tags. Returns up to 5 results with links.
+    """Search e621 for posts matching tags. Returns up to 5 results with links. Requires the e621 permission tag.
     Args:
         tags: The e621 tag search query (e.g. 'protogen cute', 'artist:name'). Multiple tags are AND-filtered.
     """
+    import bong_tools as _bt
+    user_id = _bt.current_user_id
+    if not user_id:
+        return "Cannot determine your user ID."
+    if not user_data.has_permission(user_id, "e621"):
+        return "You don't have access to e621. Ask an admin to grant you the e621 tag."
     return search_e621_posts(tags, limit=5)
 
 

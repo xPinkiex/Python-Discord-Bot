@@ -176,7 +176,7 @@ def main():
 
         Only admins can use this command.
         """
-        if not user_data.is_admin(ctx.author.id) and not await bot.is_owner(ctx.author):
+        if not user_data.has_permission(ctx.author.id, "admin") and not await bot.is_owner(ctx.author):
             await ctx.send("Only admins can use this command.")
             return
         try:
@@ -249,7 +249,7 @@ def main():
     @bot.command(name='load')
     async def load_ext(ctx, util: str):
         """Load a cog extension by name. Admin only."""
-        if not user_data.is_admin(ctx.author.id) and not await bot.is_owner(ctx.author):
+        if not user_data.has_permission(ctx.author.id, "admin") and not await bot.is_owner(ctx.author):
             await ctx.send("Only admins can use this command.")
             return
         try:
@@ -263,7 +263,7 @@ def main():
     @bot.command(name='unload')
     async def unload_ext(ctx, util: str):
         """Unload a cog extension by name. Admin only."""
-        if not user_data.is_admin(ctx.author.id) and not await bot.is_owner(ctx.author):
+        if not user_data.has_permission(ctx.author.id, "admin") and not await bot.is_owner(ctx.author):
             await ctx.send("Only admins can use this command.")
             return
         try:
@@ -277,7 +277,7 @@ def main():
     @bot.command(name='poweroff', help="Power off the bot")
     async def poweroff(ctx):
         """Gracefully shut down the bot. Admin only."""
-        if not user_data.is_admin(ctx.author.id) and not await bot.is_owner(ctx.author):
+        if not user_data.has_permission(ctx.author.id, "admin") and not await bot.is_owner(ctx.author):
             await ctx.send("Only admins can use this command.")
             return
         await ctx.send("Onoffing...")
@@ -290,7 +290,7 @@ def main():
         With no argument, toggles debug mode on/off.
         With True or False, explicitly sets it.
         """
-        if not user_data.is_admin(ctx.author.id) and not await bot.is_owner(ctx.author):
+        if not user_data.has_permission(ctx.author.id, "admin") and not await bot.is_owner(ctx.author):
             await ctx.send("Only admins can use this command.")
             return
         new_state = debug.toggle_debug(enabled)

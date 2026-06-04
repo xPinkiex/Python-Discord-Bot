@@ -73,10 +73,14 @@ VOICE_COOLDOWN_SECONDS = 5
 # Channels with an active background summarization task (prevents double-summarization)
 _summarization_in_progress: set[int] = set()
 
-# Permission tiers are managed in dm_approval (users.json + OWNER_ID)
-# - admin:     full access (shutdown, @llm, @reload, @poweroff, DMs)
-# - authorized: chatting + tools + voice commands, no shutdown/reload/@llm
-# - user:      chatting + tools, no @llm or shutdown
+# Permission tags are managed in user_data (users.json + OWNER_ID)
+# Tags: llm (chat), llm_fast (no cooldown), music, vc_commands, e621, admin (implies all)
+# - admin:    full access (@llm, @tags, @memories, @forget_user, @delete_memory, @reload, @poweroff, shutdown)
+# - llm:      talk to Bong, use chat-tier tools (memories, images, texts, web, reminders, timezone, stats, react)
+# - llm_fast:  same as llm + no 60s cooldown
+# - music:    all music tools + join/leave voice
+# - vc_commands: voice command wake word + start/stop listening
+# - e621:     e621 search, subscribe, unsubscribe, DM notifications
 
 # Channels whose history is automatically loaded on startup so Bong has context immediately
 DEBUG_CHANNEL_IDS = [ 698924302594211883, 698633099591942199 ]
@@ -1063,7 +1067,7 @@ async def process_voice_command(bot, guild, channel, user_id: int, username: str
         debug.log("VoiceCmd", f"Voice command processed: {text[:50]}...")
 
         if bong_tools.pending_shutdown:
-            if user_data.is_admin(user_id):
+            if user_data.has_permission(user_id, "admin"):
                 if guild and guild.voice_client and guild.voice_client.channel:
                     await _set_voice_status(guild, None)
                 await channel.send("🫡")
@@ -1218,9 +1222,8 @@ class BongCog(commands.Cog):
         if len(self._processed_ids) > 2000:
             self._processed_ids = set(sorted(self._processed_ids)[-1000:])
 
-        # Cooldown: regular users must wait 60s between Bong responses.
-        # Admin and authorized users bypass this.
-        if not user_data.is_authorized(message.author.id):
+        # Cooldown: users without llm_fast must wait 60s between Bong responses.
+        if not user_data.has_permission(message.author.id, "llm_fast"):
             now = datetime.now().timestamp()
             last = self._user_cooldowns.get(message.author.id, 0)
             if now - last < 60:
@@ -1229,10 +1232,9 @@ class BongCog(commands.Cog):
                 return
             self._user_cooldowns[message.author.id] = now
 
-        # Handle DMs — check approval before responding
+        # Handle DMs — check llm permission before responding
         if isinstance(message.channel, discord.DMChannel):
-            # Allowlisted users and pre-approved users skip the approval flow
-            if not user_data.is_known(message.author.id):
+            if not user_data.has_permission(message.author.id, "llm"):
                 should_process = await dm_approval.process_dm(message, self.bot)
                 if not should_process:
                     return
@@ -1243,8 +1245,11 @@ class BongCog(commands.Cog):
                 async for msg in message.channel.history(limit=MAX_MEMORY_SIZE):
                     chat_memories[message.channel.id].append(f"{msg.author.display_name} at {msg.created_at.strftime('%H:%M')}: {msg.content}")
 
-        # For guild channels, only process messages in active channels
+        # For guild channels, only process messages in active channels and from users with llm permission
         if not isinstance(message.channel, discord.DMChannel) and message.channel.id not in active_channels:
+            return
+        # In guild channels, ignore users without llm permission
+        if not isinstance(message.channel, discord.DMChannel) and not user_data.has_permission(message.author.id, "llm"):
             return
         # Ignore bot commands (messages starting with the command prefix that match a real command)
         if message.content.startswith(self.bot.command_prefix):
@@ -1329,7 +1334,7 @@ class BongCog(commands.Cog):
 
                 # Handle shutdown if the LLM called the shutdown tool
                 if bong_tools.pending_shutdown:
-                    if user_data.is_admin(message.author.id):
+                    if user_data.has_permission(message.author.id, "admin"):
                         # Clear voice channel status before shutting down
                         if message.guild and message.guild.voice_client and message.guild.voice_client.channel:
                             await _set_voice_status(message.guild, None)
@@ -1350,8 +1355,8 @@ class BongCog(commands.Cog):
     @commands.command(name="llm", help="Toggle Bong's activity in the current channel")
     async def llm(self, ctx):
         """Toggle Bong's activity in the current channel. Admin only."""
-        if not user_data.is_admin(ctx.author.id):
-            await ctx.send("You are not authorized to use this command.")
+        if not user_data.has_permission(ctx.author.id, "admin"):
+            await ctx.send("Only admins can use this command.")
             return
         if ctx.channel.id in active_channels:
             active_channels.discard(ctx.channel.id)
@@ -1370,7 +1375,7 @@ class BongCog(commands.Cog):
         """Search or list Bong's long-term memories. Admin only.
         Use: @memories <query> to search, @memories with no args to list all.
         """
-        if not user_data.is_admin(ctx.author.id):
+        if not user_data.has_permission(ctx.author.id, "admin"):
             await ctx.send("Only admins can use this command.")
             return
         from bong_utilities.manage_memory import search_memories, list_memories
@@ -1390,7 +1395,7 @@ class BongCog(commands.Cog):
         """Delete all memories belonging to a specific user. Admin only.
         Use: @forget_user <user_id>
         """
-        if not user_data.is_admin(ctx.author.id):
+        if not user_data.has_permission(ctx.author.id, "admin"):
             await ctx.send("Only admins can use this command.")
             return
         from bong_utilities.manage_memory import forget_user
@@ -1402,12 +1407,53 @@ class BongCog(commands.Cog):
         """Delete memories matching a search query. Admin only.
         Use: @delete_memory <search query>
         """
-        if not user_data.is_admin(ctx.author.id):
+        if not user_data.has_permission(ctx.author.id, "admin"):
             await ctx.send("Only admins can use this command.")
             return
         from bong_utilities.manage_memory import delete_memory_by_query
         result = await asyncio.to_thread(delete_memory_by_query, query)
         await ctx.send(result)
+
+    @commands.group(name="tags", help="Manage user permission tags")
+    async def tags(self, ctx):
+        """Manage user permission tags. Admin only. Subcommands: list, add, remove."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send("Usage: @tags list <user_id> | @tags add <user_id> <tag> | @tags remove <user_id> <tag>\nTags: llm, llm_fast, music, vc_commands, e621, admin")
+
+    @tags.command(name="list", help="List a user's permission tags")
+    async def tags_list(self, ctx, user_id: int):
+        """List the permission tags for a user. Admin only."""
+        if not user_data.has_permission(ctx.author.id, "admin"):
+            await ctx.send("Only admins can use this command.")
+            return
+        perms = user_data.get_permissions(user_id)
+        if not perms:
+            await ctx.send(f"User {user_id} has no tags (unknown user).")
+        else:
+            await ctx.send(f"User {user_id} tags: {', '.join(perms)}")
+
+    @tags.command(name="add", help="Add a permission tag to a user")
+    async def tags_add(self, ctx, user_id: int, tag: str):
+        """Add a permission tag to a user. Admin only. Tags: llm, llm_fast, music, vc_commands, e621, admin"""
+        if not user_data.has_permission(ctx.author.id, "admin"):
+            await ctx.send("Only admins can use this command.")
+            return
+        if tag not in user_data.VALID_TAGS:
+            await ctx.send(f"Invalid tag '{tag}'. Valid tags: {', '.join(sorted(user_data.VALID_TAGS))}")
+            return
+        user_data.add_permission(user_id, tag)
+        await ctx.send(f"Added '{tag}' tag to user {user_id}. Current tags: {', '.join(user_data.get_permissions(user_id))}")
+
+    @tags.command(name="remove", help="Remove a permission tag from a user")
+    async def tags_remove(self, ctx, user_id: int, tag: str):
+        """Remove a permission tag from a user. Admin only."""
+        if not user_data.has_permission(ctx.author.id, "admin"):
+            await ctx.send("Only admins can use this command.")
+            return
+        if user_data.remove_permission(user_id, tag):
+            await ctx.send(f"Removed '{tag}' tag from user {user_id}. Current tags: {', '.join(user_data.get_permissions(user_id))}")
+        else:
+            await ctx.send(f"User {user_id} doesn't have the '{tag}' tag.")
 
 async def setup(bot):
     """Entry point for discord.py to load this cog."""

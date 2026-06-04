@@ -8,14 +8,24 @@ from langchain_core.tools import tool
 import debug
 import bong_tools
 import bong_memory_helpers
+import user_data
+
+
+def _check_llm():
+    if not user_data.has_permission(bong_tools.current_user_id, "llm"):
+        return "You don't have permission to use memory features. Ask an admin to grant you the llm tag."
+    return None
 
 
 @tool
 def save_memory(fact: str) -> str:
-    """Save an important fact to long-term memory. Use this to remember things about users, preferences, inside jokes, or any information worth recalling later. Be selective — only save things that are genuinely useful to remember. If the fact contradicts or updates something already remembered, the old memory will be replaced automatically.
+    """Save an important fact to long-term memory. Use this to remember things about users, preferences, inside jokes, or any information worth recalling later. Be selective — only save things that are genuinely useful to remember. If the fact contradicts or updates something already remembered, the old memory will be replaced automatically. Requires the llm permission tag.
     Args:
         fact: A concise fact or piece of information to remember (e.g. "Eve loves dubstep and skrillex", "Radon is an orange fox who likes cars").
     """
+    denied = _check_llm()
+    if denied:
+        return denied
     try:
         clean_fact = bong_memory_helpers._clean_for_embedding(fact)
 
@@ -56,10 +66,13 @@ def save_memory(fact: str) -> str:
 
 @tool
 def recall_memories_by_userid(query: str) -> str:
-    """Search the current user's long-term memories. Use this when you need to recall something you've previously saved about the user you're talking to.
+    """Search the current user's long-term memories. Use this when you need to recall something you've previously saved about the user you're talking to. Requires the llm permission tag.
     Args:
         query: What to search for (e.g. "music preferences", "inside jokes about cars").
     """
+    denied = _check_llm()
+    if denied:
+        return denied
     results = bong_memory_helpers.retrieve_memories(query, user_id=bong_tools.current_user_id)
     if not results:
         return "No relevant memories found for this user."
@@ -68,10 +81,13 @@ def recall_memories_by_userid(query: str) -> str:
 
 @tool
 def recall_memories_general(query: str) -> str:
-    """Search all long-term memories regardless of user. Use this when you need to recall something about someone other than the current user, or a general fact not tied to a specific person.
+    """Search all long-term memories regardless of user. Use this when you need to recall something about someone other than the current user, or a general fact not tied to a specific person. Requires the llm permission tag.
     Args:
         query: What to search for (e.g. "Radon's fursona", "inside jokes", "who likes dubstep").
     """
+    denied = _check_llm()
+    if denied:
+        return denied
     results = bong_memory_helpers.retrieve_memories(query)
     if not results:
         return "No relevant memories found."
@@ -80,10 +96,13 @@ def recall_memories_general(query: str) -> str:
 
 @tool
 def forget_memory(query: str) -> str:
-    """Delete a long-term memory that is no longer accurate or wanted. Use this when someone tells you to forget something, or when you realize a saved memory is wrong. Searches for the most similar memory and deletes it. Can only delete memories belonging to the current user.
+    """Delete a long-term memory that is no longer accurate or wanted. Use this when someone tells you to forget something, or when you realize a saved memory is wrong. Searches for the most similar memory and deletes it. Can only delete memories belonging to the current user. Requires the llm permission tag.
     Args:
         query: A description of the memory to forget (e.g. "Eve likes dubstep", "Radon's favorite color").
     """
+    denied = _check_llm()
+    if denied:
+        return denied
     try:
         clean_query = bong_memory_helpers._clean_for_embedding(query)
         results = bong_memory_helpers._vector_db.similarity_search_with_relevance_scores(clean_query, k=3, filter={"user_id": bong_tools.current_user_id})
