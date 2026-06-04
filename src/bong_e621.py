@@ -32,7 +32,7 @@ E621_USERNAME = os.getenv("E621_USERNAME", "")
 E621_API_KEY = os.getenv("E621_API_KEY", "")
 E621_USER_AGENT = "BongBot/1.0 (by AkazuEve on e621)"
 
-E621_POLL_INTERVAL = 60  # 1 minute
+E621_POLL_INTERVAL = 900  # 15 minutes
 
 _STORE_PATH = BONG_DATA / "subscriptions.json"
 _store = persist.PersistStore(_STORE_PATH, default={})

@@ -75,7 +75,7 @@ _summarization_in_progress: set[int] = set()
 
 # Permission tags are managed in user_data (users.json + OWNER_ID)
 # Tags: llm (chat), llm_fast (no cooldown), music, vc_commands, e621, admin (implies all)
-# - admin:    full access (@llm, @tags, @memories, @forget_user, @delete_memory, @reload, @poweroff, shutdown)
+# - admin:    full access (@llm, @tags, @reload, @poweroff, shutdown)
 # - llm:      talk to Bong, use chat-tier tools (memories, images, texts, web, reminders, timezone, stats, react)
 # - llm_fast:  same as llm + no 60s cooldown
 # - music:    all music tools + join/leave voice
@@ -244,7 +244,7 @@ def build_system_prompt(message, history, voice_status, attachment_desc, image_a
     history_str = "\n".join(history)
     user_msg = message.content.replace("\n", ". ")
     # Retrieve relevant memories based on the user's message and display name
-    memories_str = bong_memory_helpers.retrieve_memories(f"{message.author.display_name}: {user_msg}", username=message.author.display_name, user_id=message.author.id)
+    memories_str = bong_memory_helpers.retrieve_memories(f"{message.author.display_name}: {user_msg}", user_id=message.author.id)
 
     # Build the reply context block if the user is replying to another message
     replied_content = replied_to.content.replace("\n", ". ") if replied else ""
@@ -1012,7 +1012,7 @@ async def process_voice_command(bot, guild, channel, user_id: int, username: str
             voice_status_str += "\nVoice command listener is ACTIVE — listening for 'hey bong' wake word."
 
         # Build the system prompt using a synthetic approach
-        memories_str = bong_memory_helpers.retrieve_memories(f"{username}: {text}", username=username, user_id=user_id)
+        memories_str = bong_memory_helpers.retrieve_memories(f"{username}: {text}", user_id=user_id)
         summaries = channel_summaries.get(channel.id, [])
         summaries_str = ""
         if summaries:
@@ -1369,50 +1369,6 @@ class BongCog(commands.Cog):
                 history.append(f"{msg.author.display_name} at {msg.created_at.strftime('%H:%M')}: {msg.content}")
             await ctx.send(f"Bong is now active in this channel! (ID: {ctx.channel.id})")
             debug.log("AI", history)
-
-    @commands.command(name="memories", help="Search or list Bong's long-term memories")
-    async def memories(self, ctx, *, query: str = ""):
-        """Search or list Bong's long-term memories. Admin only.
-        Use: @memories <query> to search, @memories with no args to list all.
-        """
-        if not user_data.has_permission(ctx.author.id, "admin"):
-            await ctx.send("Only admins can use this command.")
-            return
-        from bong_utilities.manage_memory import search_memories, list_memories
-        async with ctx.typing():
-            if query:
-                result = await asyncio.to_thread(search_memories, query)
-            else:
-                result = await asyncio.to_thread(list_memories)
-            if len(result) > 2000:
-                for chunk in [result[i:i+2000] for i in range(0, len(result), 2000)]:
-                    await ctx.send(chunk)
-            else:
-                await ctx.send(result)
-
-    @commands.command(name="forget_user", help="Delete all memories for a user")
-    async def forget_user_cmd(self, ctx, user_id: int):
-        """Delete all memories belonging to a specific user. Admin only.
-        Use: @forget_user <user_id>
-        """
-        if not user_data.has_permission(ctx.author.id, "admin"):
-            await ctx.send("Only admins can use this command.")
-            return
-        from bong_utilities.manage_memory import forget_user
-        result = await asyncio.to_thread(forget_user, user_id)
-        await ctx.send(result)
-
-    @commands.command(name="delete_memory", help="Delete memories matching a query")
-    async def delete_memory_cmd(self, ctx, *, query: str):
-        """Delete memories matching a search query. Admin only.
-        Use: @delete_memory <search query>
-        """
-        if not user_data.has_permission(ctx.author.id, "admin"):
-            await ctx.send("Only admins can use this command.")
-            return
-        from bong_utilities.manage_memory import delete_memory_by_query
-        result = await asyncio.to_thread(delete_memory_by_query, query)
-        await ctx.send(result)
 
     @commands.group(name="tags", help="Manage user permission tags")
     async def tags(self, ctx):

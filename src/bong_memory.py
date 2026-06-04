@@ -10,6 +10,8 @@ import bong_tools
 import bong_memory_helpers
 import user_data
 
+VALID_CATEGORIES = {"preference", "fact", "relationship", "inside_joke", "instruction"}
+
 
 def _check_llm():
     if not user_data.has_permission(bong_tools.current_user_id, "llm"):
@@ -18,46 +20,80 @@ def _check_llm():
 
 
 @tool
-def save_memory(fact: str) -> str:
-    """Save an important fact to long-term memory. Use this to remember things about users, preferences, inside jokes, or any information worth recalling later. Be selective — only save things that are genuinely useful to remember. If the fact contradicts or updates something already remembered, the old memory will be replaced automatically. Requires the llm permission tag.
+def save_memory(fact: str, category: str, importance: int) -> str:
+    """Save an important fact to long-term memory. Use this to remember things about users, preferences, inside jokes, or any information worth recalling later. Be selective — only save things that are genuinely useful to remember. If the fact contradicts or updates something already remembered, the old memory will be replaced automatically. Always use display names, never Discord IDs or mentions. Write facts normally — not in third person and never refer to yourself as "Bong" (e.g. write "Eve loves dubstep" not "Bong remembers that Eve loves dubstep", write "I prefer to be called a creecher" not "Bong's preference is to be called a creecher"). Requires the llm permission tag.
     Args:
-        fact: A concise fact or piece of information to remember (e.g. "Eve loves dubstep and skrillex", "Radon is an orange fox who likes cars").
+        fact: A concise fact written normally, using display names only, never <@ID> mentions. Do NOT write in third person or refer to yourself as "Bong" (e.g. "Eve loves dubstep and skrillex", "I prefer to be called a creecher, not a gremlin").
+        category: The type of fact: "preference" (likes/dislikes), "fact" (general knowledge), "relationship" (how people relate to each other), "inside_joke" (recurring jokes), "instruction" (things to always remember or do).
+        importance: How important this fact is on a scale of 1-5. 1=trivial detail, 3=normal, 5=critical (allergies, core identity, essential instructions).
     """
     denied = _check_llm()
     if denied:
         return denied
     try:
-        clean_fact = bong_memory_helpers._clean_for_embedding(fact)
+        category = category.lower().strip()
+        if category not in VALID_CATEGORIES:
+            category = "fact"
+        importance = max(1, min(5, importance))
 
-        contradiction_id = bong_memory_helpers._find_contradiction(clean_fact, bong_tools.current_user_id)
-        if contradiction_id:
+        clean_fact = bong_memory_helpers._clean_for_embedding(fact)
+        if not clean_fact:
+            return "Fact was empty after cleaning."
+
+        dedup_id, is_near_dup = bong_memory_helpers.tiered_dedup(clean_fact, bong_tools.current_user_id)
+
+        if is_near_dup is False and dedup_id is not None:
+            # Near-duplicate — skip saving
+            try:
+                old = bong_memory_helpers._vector_db._collection.get(ids=[dedup_id], include=["documents"])
+                old_text = old["documents"][0] if old["documents"] else "(unknown)"
+                return f"Already remembered something very similar: {old_text}"
+            except Exception:
+                return "Already remembered something very similar."
+
+        if dedup_id is not None and is_near_dup:
+            # Contradiction — replace old memory with updated one
             collection = bong_memory_helpers._vector_db._collection
             try:
-                old = collection.get(ids=[contradiction_id], include=["documents", "metadatas"])
+                old = collection.get(ids=[dedup_id], include=["documents", "metadatas"])
                 old_text = old["documents"][0] if old["documents"] else "(unknown)"
                 old_meta = dict(old["metadatas"][0]) if old["metadatas"] else {}
-                collection.delete(ids=[contradiction_id])
+                collection.delete(ids=[dedup_id])
                 old_meta["saved_at"] = datetime.now().timestamp()
-                old_meta["username"] = bong_tools.current_username or ""
+                old_meta["last_accessed"] = datetime.now().timestamp()
+                old_meta["user_name"] = bong_tools.current_username or ""
+                old_meta["category"] = category
+                old_meta["importance"] = importance
+                old_meta["user_id"] = bong_tools.current_user_id
                 bong_memory_helpers._vector_db.add_texts([clean_fact], metadatas=[old_meta])
                 return f"Updated memory: {old_text} → {clean_fact}"
             except Exception as e:
                 bong_memory_helpers._vector_db.add_texts(
                     [clean_fact],
-                    metadatas=[{"user_id": bong_tools.current_user_id, "saved_at": datetime.now().timestamp(), "username": bong_tools.current_username or ""}],
+                    metadatas=[{
+                        "user_id": bong_tools.current_user_id,
+                        "user_name": bong_tools.current_username or "",
+                        "category": category,
+                        "importance": importance,
+                        "saved_at": datetime.now().timestamp(),
+                        "last_accessed": datetime.now().timestamp(),
+                        "access_count": 0,
+                    }],
                 )
                 return f"Remembered: {clean_fact} (failed to replace old: {e})"
 
-        similar = bong_memory_helpers._vector_db.similarity_search_with_relevance_scores(clean_fact, k=3)
-        for doc, score in similar:
-            if score >= 0.7:
-                existing_uid = doc.metadata.get("user_id")
-                if existing_uid == bong_tools.current_user_id:
-                    return f"Already remembered something similar: {doc.page_content}"
-
+        # New fact — save it
         bong_memory_helpers._vector_db.add_texts(
             [clean_fact],
-            metadatas=[{"user_id": bong_tools.current_user_id, "saved_at": datetime.now().timestamp(), "username": bong_tools.current_username or ""}],
+            metadatas=[{
+                "user_id": bong_tools.current_user_id,
+                "user_name": bong_tools.current_username or "",
+                "category": category,
+                "importance": importance,
+                "saved_at": datetime.now().timestamp(),
+                "last_accessed": datetime.now().timestamp(),
+                "access_count": 0,
+            }],
         )
         return f"Remembered: {clean_fact}"
     except Exception as e:
@@ -65,47 +101,38 @@ def save_memory(fact: str) -> str:
 
 
 @tool
-def recall_memories_by_userid(query: str) -> str:
-    """Search the current user's long-term memories. Use this when you need to recall something you've previously saved about the user you're talking to. Requires the llm permission tag.
+def recall_memories(query: str, about: str = "") -> str:
+    """Search long-term memories. Use this to recall things you've previously saved. Leave 'about' empty to search your own memories, or pass a display name to search memories about someone else. If the name is matched fuzzily, you'll see a warning — double-check with the user if unsure. Write queries normally, not in third person. Requires the llm permission tag.
     Args:
-        query: What to search for (e.g. "music preferences", "inside jokes about cars").
+        query: What to search for, written normally — not in third person (e.g. "music preferences", "my favorite color", "who likes cars").
+        about: The display name of the person whose memories to search. Leave empty to search memories about the current user. Use display names only, never Discord IDs.
     """
     denied = _check_llm()
     if denied:
         return denied
-    results = bong_memory_helpers.retrieve_memories(query, user_id=bong_tools.current_user_id)
-    if not results:
-        return "No relevant memories found for this user."
-    return results
-
-
-@tool
-def recall_memories_general(query: str) -> str:
-    """Search all long-term memories regardless of user. Use this when you need to recall something about someone other than the current user, or a general fact not tied to a specific person. Requires the llm permission tag.
-    Args:
-        query: What to search for (e.g. "Radon's fursona", "inside jokes", "who likes dubstep").
-    """
-    denied = _check_llm()
-    if denied:
-        return denied
-    results = bong_memory_helpers.retrieve_memories(query)
-    if not results:
+    about_name = about.strip() if about else ""
+    results = bong_memory_helpers.retrieve_memories(query, user_id=bong_tools.current_user_id, about_name=about_name)
+    if not results or not results.strip():
+        if about_name:
+            return f"No relevant memories found about {about_name}."
         return "No relevant memories found."
     return results
 
 
 @tool
 def forget_memory(query: str) -> str:
-    """Delete a long-term memory that is no longer accurate or wanted. Use this when someone tells you to forget something, or when you realize a saved memory is wrong. Searches for the most similar memory and deletes it. Can only delete memories belonging to the current user. Requires the llm permission tag.
+    """Delete a long-term memory that is no longer accurate or wanted. Use this when someone tells you to forget something, or when you realize a saved memory is wrong. Searches the current user's memories and deletes the best match. Always use display names in the query, never Discord IDs. Requires the llm permission tag.
     Args:
-        query: A description of the memory to forget (e.g. "Eve likes dubstep", "Radon's favorite color").
+        query: A description of the memory to forget using display names only (e.g. "Eve likes dubstep", "my favorite color").
     """
     denied = _check_llm()
     if denied:
         return denied
     try:
         clean_query = bong_memory_helpers._clean_for_embedding(query)
-        results = bong_memory_helpers._vector_db.similarity_search_with_relevance_scores(clean_query, k=3, filter={"user_id": bong_tools.current_user_id})
+        results = bong_memory_helpers._vector_db.similarity_search_with_relevance_scores(
+            clean_query, k=3, filter={"user_id": bong_tools.current_user_id}
+        )
         for doc, score in results:
             if score >= 0.5:
                 doc_id = doc.id if hasattr(doc, 'id') else doc.metadata.get("id")
@@ -118,4 +145,4 @@ def forget_memory(query: str) -> str:
         return f"Failed to forget memory: {e}"
 
 
-tools = [save_memory, recall_memories_by_userid, recall_memories_general, forget_memory]
+tools = [save_memory, recall_memories, forget_memory]

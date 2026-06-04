@@ -210,7 +210,7 @@ def main():
                     for k, v in snapshots[mod].items():
                         setattr(sys.modules[mod], k, v)
                 debug.log("Bot", f"Reloaded module {mod}")
-            # Also reload any submodules (e.g. bong_utilities.something)
+            # Also reload any submodules
             for mod_name in list(sys.modules):
                 if mod_name.startswith(util + ".") or (mod_name != util and util in mod_name.split(".")):
                     snapshots[mod_name] = {k: getattr(sys.modules[mod_name], k) for k in dir(sys.modules[mod_name])
