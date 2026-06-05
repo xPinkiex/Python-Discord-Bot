@@ -16,8 +16,10 @@ bong_data/downloads/
 bong_data/logs/
 bong_data/backup/
 bong_data/chroma_db/
+bong_data/chroma_backups/
 bong_data/whisper_models/
 bong_data/song_stats.json
+bong_data/subscriptions.json
 
 # User data
 bong_user_data/users.json
