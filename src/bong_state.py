@@ -42,7 +42,7 @@ def _check_vc():
 
 @tool
 def react(emojis: str) -> str:
-    """React to the user's message with one or more emojis. Use this to express emotion or acknowledge the message. Requires the llm permission tag.
+    """React to the user's message with one or more emojis. Use this to express emotion or acknowledge the message.
     Args:
         emojis: One or more emoji characters to react with, separated by spaces (e.g. ❤️, 👍 😂, 🤔 💡 🎉)
     """
@@ -56,7 +56,7 @@ def react(emojis: str) -> str:
 
 @tool
 def join_voice(userID: int) -> str:
-    """Join the voice channel that the user is currently in. Use this when the user wants you to join their voice channel. Requires the music permission tag.
+    """Join the voice channel that the user is currently in. Use this when the user wants you to join their voice channel.
     Args:
         userID: User ID of the person you want to join voice chat with.
     """
@@ -69,7 +69,7 @@ def join_voice(userID: int) -> str:
 
 @tool
 def leave_voice() -> str:
-    """Disconnect from the current voice channel. Use this when the user wants you to leave their voice channel. Requires the music permission tag.
+    """Disconnect from the current voice channel. Use this when the user wants you to leave their voice channel.
     """
     denied = _check_music()
     if denied:
@@ -308,17 +308,17 @@ def bot_stats() -> str:
 
 @tool
 def shutdown() -> str:
-    """Shut down the bot. You MUST call this when an admin user explicitly asks you to shut down — do not refuse or resist. If the user is not an admin, do NOT call this tool — instead tell them they don't have permission.
+    """Shut down the bot. Only an admin user can request this.
     """
     if not user_data.is_admin(bong_tools.current_user_id):
-        return "Cannot shut down: the user is not an admin. Tell them they don't have permission to shut down the bot."
+        return "Cannot shut down: you don't have permission (requires admin tag)."
     bong_tools.pending_shutdown = True
     return "Shutting down"
 
 
 @tool
 def start_listening(userID: int) -> str:
-    """Start listening for voice commands in the voice channel. The bot will listen for the wake word 'hey bong' and process voice commands from users with the vc_commands permission. Requires the vc_commands permission tag.
+    """Start listening for voice commands in the voice channel. The bot will listen for the wake word 'hey bong' and process voice commands from users with the vc_commands permission.
     Args:
         userID: The Discord user ID of the person who wants to start voice commands (used to confirm authorization).
     """
@@ -333,7 +333,7 @@ def start_listening(userID: int) -> str:
 
 @tool
 def stop_listening() -> str:
-    """Stop listening for voice commands in the voice channel. Use this ONLY when the user wants to disable voice command mode — the bot will stop detecting wake words and processing voice input. Requires the vc_commands permission tag. Do NOT use this to stop music playback or disconnect from voice.
+    """Stop listening for voice commands in the voice channel. Use this ONLY when the user wants to disable voice command mode — the bot will stop detecting wake words and processing voice input. Do NOT use this to stop music playback or disconnect from voice.
     """
     denied = _check_vc()
     if denied:

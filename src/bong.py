@@ -75,7 +75,7 @@ _summarization_in_progress: set[int] = set()
 
 # Permission tags are managed in user_data (users.json + OWNER_ID)
 # Tags: llm (chat), llm_fast (no cooldown), music, vc_commands, e621, admin (implies all)
-# - admin:    full access (@llm, @tags, @reload, @poweroff, shutdown)
+# - admin:    full access (@llm, @tags, @poweroff, shutdown)
 # - llm:      talk to Bong, use chat-tier tools (memories, images, texts, web, reminders, timezone, stats, react)
 # - llm_fast:  same as llm + no 60s cooldown
 # - music:    all music tools + join/leave voice
@@ -1111,7 +1111,7 @@ class BongCog(commands.Cog):
             persist.flush_all()
 
     async def cog_unload(self):
-        """Flush all persist stores to disk when the cog is unloaded (shutdown/reload)."""
+        """Flush all persist stores to disk when the cog is unloaded (shutdown)."""
         persist.flush_all()
         self.reminder_task.cancel()
         self.persist_task.cancel()

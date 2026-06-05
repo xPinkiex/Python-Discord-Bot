@@ -7,7 +7,7 @@
 # Safety features:
 #   - Backup before write: .bak file preserves last good state on every flush
 #   - Dirty flag: mutations don't trigger immediate I/O
-#   - Explicit backup restore via restore_all_from_backup() or --reload-backup-data
+#   - Explicit backup restore via restore_all_from_backup() or --restore-backup
 
 import json
 import shutil

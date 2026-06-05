@@ -63,7 +63,7 @@ class ApproveView(discord.ui.View):
             content=f"Approved **{self.requesting_user.display_name}** ({self.requesting_user.id}) with tags: {tag_labels}.",
             view=None,
         )
-        user_data.set_permissions(self.requesting_user.id, tags)
+        user_data.set_permissions(self.requesting_user.id, tags, display_name=self.requesting_user.display_name)
         pending_approval.discard(self.requesting_user.id)
         _sync_store()
         self.stop()

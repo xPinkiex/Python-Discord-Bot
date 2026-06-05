@@ -59,9 +59,8 @@ Users are granted access to features via tags stored in `bong_user_data/users.js
 | Wake word detection | `vc_commands` | `voice_commands.py:434` |
 | Voice transcription | `vc_commands` | `voice_commands.py:514` |
 | @llm channel toggle | `admin` | `bong.py` |
-| @memories, @forget_user, @delete_memory | `admin` | `bong.py` |
 | @tags (add/remove/list) | `admin` | `bong.py` |
-| @reload, @load, @unload, @poweroff, @debug | `admin` | `main.py` |
+| @poweroff, @debug | `admin` | `main.py` |
 | e621 subscription polling DMs | (background, checks subscriber list) | `bong.py:_check_e621_subscriptions` |
 
 ## DM Approval Flow

@@ -19,7 +19,6 @@ A Discord bot with a protogen personality, powered by a local LLM (Ollama) with 
 - **Voice Commands** — Wake word detection ("hey bong") via custom openWakeWord ONNX model, Whisper transcription, LLM processing in voice channel text chat
 - **Image/Text Sharing** — Send saved images and text files in chat, describe attached images via vision model
 - **Bot Stats** — Uptime, memory count, known users, reminders, top 3 most-played songs
-- **Hot Reload** — `@reload` command refreshes code without restarting (owner only), preserves all mutable state across reloads
 - **Streaming Responses** — LLM responses stream to Discord in real-time, auto-split across messages when exceeding 2000 characters
 - **Conversation Summarization** — Rolling per-channel history with automatic summarization of older messages
 
@@ -102,9 +101,8 @@ After initial approval, `@tags` allows fine-grained adjustments.
 | Wake word detection | `vc_commands` | `voice_commands.py` |
 | Voice command transcription | `vc_commands` | `voice_commands.py` |
 | `@llm` channel toggle | `admin` | `bong.py` |
-| `@memories`, `@forget_user`, `@delete_memory` | `admin` | `bong.py` |
 | `@tags` (add/remove/list) | `admin` | `bong.py` |
-| `@reload`, `@load`, `@unload`, `@poweroff`, `@debug` | `admin` | `main.py` |
+| `@poweroff`, `@debug` | `admin` | `main.py` |
 
 ## Architecture
 
@@ -124,7 +122,7 @@ Message → BongCog.on_message()
 
 | File | Lines | Role |
 |---|---|---|
-| `src/main.py` | 310 | Entry point, CLI args (`-d`, `--reload-backup-data`), `on_ready`, `@reload`/`@load`/`@unload`/`@poweroff`/`@debug` commands, console thread |
+| `src/main.py` | 200 | Entry point, CLI args (`-d`, `--restore-backup`), `on_ready`, `@poweroff`/`@debug` commands, console thread |
 | `src/bong.py` | 1460 | BongCog — message handling, LLM loop, voice dispatch, DM approval, e621 subscription polling, `@tags`/`@llm`/`@memories`/`@forget_user`/`@delete_memory` commands |
 | `src/bong_tools.py` | 143 | Shared state hub: `pending_*` flags, library lists, `advance_queue()`, aggregated `tool_map` |
 | `src/bong_state.py` | 348 | 19 LangChain `@tool` funcs: react, voice, images, texts, time, reminders, stats, shutdown |
@@ -247,15 +245,9 @@ Users with the `e621` tag can subscribe to e621 tags and receive DM notification
 
 | Command | Description |
 |---|---|
-| `@reload` | Hot-reload BongCog and all related modules (preserves state) |
-| `@load <cog>` | Load a specific cog |
-| `@unload <cog>` | Unload a specific cog |
 | `@poweroff` | Shut down the bot |
 | `@debug` | Toggle debug logging |
 | `@llm <channel>` | Toggle Bong's active presence in a channel |
-| `@memories <user_id>` | List memories for a user |
-| `@forget_user <user_id>` | Delete all memories for a user |
-| `@delete_memory <memory_id>` | Delete a specific memory |
 | `@tags list <user_id>` | Show a user's permission tags |
 | `@tags add <user_id> <tag>` | Add a permission tag to a user |
 | `@tags remove <user_id> <tag>` | Remove a permission tag from a user |
@@ -278,7 +270,7 @@ Users with the `e621` tag can subscribe to e621 tags and receive DM notification
 | `bong_data/wakeword_models/hey_bong.onnx` | Custom wake word model |
 | `bong_data/whisper_models/` | Cached faster-whisper models |
 
-All data files are gitignored. `PersistStore` creates `.bak` backups on write and supports restoring from backup via `--reload-backup-data` or the console `reload-backup-data` command.
+All data files are gitignored. `PersistStore` creates `.bak` backups on write and supports restoring from backup via `--restore-backup` or the console `restore-backup` command.
 
 ## Setup
 
@@ -342,20 +334,14 @@ Caches the faster-whisper "small" model to `bong_data/whisper_models/`.
 source venv/bin/activate
 python main.py              # Normal startup
 python main.py -d           # With debug logging
-python main.py --reload-backup-data  # Restore all .bak files on startup
+python main.py --restore-backup  # Restore all .bak files on startup
 ```
 
-The bot also accepts console commands while running: `reboot`, `shutdown`, `clear` (clears console), `reload-backup-data`.
+The bot also accepts console commands while running: `reboot`, `shutdown`, `clear` (clears console), `restore-backup`.
 
-## Hot Reload
+## Reboot
 
-`@reload` in Discord (admin only) hot-reloads cogs with state snapshot/restore across all related modules. The following modules are reloaded:
-
-- `src.bong` (cog)
-- `src.bong_tools`, `src.bong_state`, `src.bong_music`, `src.bong_memory`, `src.bong_web`, `src.bong_e621`
-- `src.user_data`, `src.bong_memory_helpers`, `src.bong_song_stats`
-- `src.debug`, `src.persist`, `src.dm_approval`, `src.reminders`
-- `src.voice_commands`
+`reboot` console command restarts the bot process via `os.execv`.
 
 Changes to `main.py` require a full restart.
 

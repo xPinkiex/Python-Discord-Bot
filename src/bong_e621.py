@@ -244,7 +244,7 @@ from langchain_core.tools import tool
 
 @tool
 def e621_subscribe(tags: str) -> str:
-    """Subscribe to an e621 tag search. You will receive DM notifications when new posts matching these tags appear. Tags are validated against e621's tag database. Only authorized users can use this.
+    """Subscribe to an e621 tag search. You will receive DM notifications when new posts matching these tags appear. Tags are validated against e621's tag database.
     Args:
         tags: The e621 tag search query (e.g. 'protogen solo', 'species:wolf rating:s'). Multiple tags are AND-filtered.
     """
@@ -259,7 +259,7 @@ def e621_subscribe(tags: str) -> str:
 
 @tool
 def e621_unsubscribe(tags: str) -> str:
-    """Unsubscribe from an e621 tag search. Stops DM notifications for these tags. Requires the e621 permission tag.
+    """Unsubscribe from an e621 tag search. Stops DM notifications for these tags.
     Args:
         tags: The tag search query to unsubscribe from (must match exactly).
     """
@@ -274,7 +274,7 @@ def e621_unsubscribe(tags: str) -> str:
 
 @tool
 def e621_list_subscriptions() -> str:
-    """List all your active e621 tag subscriptions. Requires the e621 permission tag."""
+    """List all your active e621 tag subscriptions."""
     import bong_tools as _bt
     user_id = _bt.current_user_id
     if not user_id:
@@ -286,7 +286,7 @@ def e621_list_subscriptions() -> str:
 
 @tool
 def e621_search(tags: str) -> str:
-    """Search e621 for posts matching tags. Returns up to 5 results with links. Requires the e621 permission tag.
+    """Search e621 for posts matching tags. Returns up to 5 results with links.
     Args:
         tags: The e621 tag search query (e.g. 'protogen cute', 'artist:name'). Multiple tags are AND-filtered.
     """

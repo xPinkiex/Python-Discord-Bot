@@ -25,7 +25,7 @@ _SUMMARIZE_MODEL = ChatOllama(model="gemma3:12b-cloud", temperature=0.3, num_pre
 
 @tool
 def web_search(query: str) -> str:
-    """Search the web for information. Use this when you need to look up facts, news, or any information you don't know. Requires the llm permission tag.
+    """Search the web for information. Use this when you need to look up facts, news, or any information you don't know.
     Args:
         query: The search query string.
     """
@@ -69,7 +69,7 @@ def youtube_search(query: str) -> str:
 
 @tool
 def summarize_url(url: str) -> str:
-    """Summarize a web page. Use this when someone shares a URL and you want to tell them what it's about, or when you need to look up information from a URL. Requires the llm permission tag.
+    """Summarize a web page. Use this when someone shares a URL and you want to tell them what it's about, or when you need to look up information from a URL.
     Args:
         url: The full URL to summarize (e.g. "https://example.com/article").
     """

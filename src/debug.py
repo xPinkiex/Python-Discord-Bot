@@ -1,4 +1,4 @@
-# debug.py — Debug logging utilities for Bong, hot-reloadable via @reload
+# debug.py — Debug logging utilities for Bong
 #
 # Provides two logging functions:
 #   - log(tag, *args): prints to console if debug mode is on
@@ -6,8 +6,7 @@
 #
 # Debug mode defaults to off unless the bot is started with -d/--debug.
 # It can also be toggled at runtime with the @debug bot command,
-# which calls toggle_debug(). State is stored in a module-level _PERSIST
-# dict so it survives hot reloads.
+# which calls toggle_debug().
 
 import sys
 import time
@@ -22,27 +21,13 @@ BONG_DATA = PROJECT_ROOT / "bong_data"
 _start = time.monotonic()
 _log_dir = BONG_DATA / "logs"
 
-def _get_state():
-    """Return the persistent debug state dict (survives module reloads).
-
-    On first call (or after a reload that wiped it), creates a new dict.
-    debug_mode defaults to False unless -d/--debug was passed.
-    """
-    import debug as _self
-    if not hasattr(_self, "_PERSIST"):
-        _self._PERSIST = {
-            "debug_mode": False,
-            "log_file": None,
-        }
-    # Lazily create the log file only when first written to
-    return _self._PERSIST
+_state = {"debug_mode": False, "log_file": None}
 
 def _ensure_log_file():
     """Create the log file on first write (avoids empty files from import)."""
-    state = _get_state()
-    if state["log_file"] is None:
+    if _state["log_file"] is None:
         _log_dir.mkdir(parents=True, exist_ok=True)
-        state["log_file"] = _log_dir / f"{datetime.now().strftime('%Y%m%d_%H.%M.%S')}-bong.log"
+        _state["log_file"] = _log_dir / f"{datetime.now().strftime('%Y%m%d_%H.%M.%S')}-bong.log"
 
 def _elapsed_str():
     """Return elapsed time since bot start as HH:MM:SS string."""
@@ -54,17 +39,17 @@ def _elapsed_str():
 
 def log(tag, *args):
     """Print a tagged log message to console. Only prints if debug mode is enabled."""
-    if _get_state()["debug_mode"]:
+    if _state["debug_mode"]:
         print(f"[{_elapsed_str()}] <{tag}>", *args)
 
 def log_to_file(tag, *args):
     """Append a tagged log message to the current log file. Only writes if debug mode is enabled."""
-    if not _get_state()["debug_mode"]:
+    if not _state["debug_mode"]:
         return
     _ensure_log_file()
     ts = _elapsed_str()
     line = f"[{ts}] <{tag}> " + " ".join(str(a) for a in args) + "\n"
-    with _get_state()["log_file"].open("a", encoding="utf-8") as f:
+    with _state["log_file"].open("a", encoding="utf-8") as f:
         f.write(line)
 
 def error(tag, *args):
@@ -73,7 +58,7 @@ def error(tag, *args):
     msg = f"[{ts}] <{tag}> " + " ".join(str(a) for a in args)
     print(msg, file=sys.stderr)
     _ensure_log_file()
-    with _get_state()["log_file"].open("a", encoding="utf-8") as f:
+    with _state["log_file"].open("a", encoding="utf-8") as f:
         f.write(msg + "\n")
 
 def toggle_debug(enabled: bool | None = None) -> bool:
@@ -81,13 +66,12 @@ def toggle_debug(enabled: bool | None = None) -> bool:
 
     With no argument, toggles. With True/False, sets explicitly.
     """
-    state = _get_state()
     if enabled is not None:
-        state["debug_mode"] = enabled
+        _state["debug_mode"] = enabled
     else:
-        state["debug_mode"] = not state["debug_mode"]
-    return state["debug_mode"]
+        _state["debug_mode"] = not _state["debug_mode"]
+    return _state["debug_mode"]
 
 def is_debug() -> bool:
     """Return whether debug mode is currently enabled."""
-    return _get_state()["debug_mode"]
+    return _state["debug_mode"]

@@ -114,10 +114,12 @@ def remove_permission(user_id: int, tag: str):
     return False
 
 
-def set_permissions(user_id: int, tags: list[str]):
+def set_permissions(user_id: int, tags: list[str], display_name: str = ""):
     """Set a user's permission tags to exactly the given list. Creates entry if needed."""
     entry = _user_data.setdefault(user_id, {})
     entry["allowed"] = [t for t in tags if t in VALID_TAGS]
+    if display_name:
+        entry["display_name"] = display_name
     _store.mark_dirty()
 
 

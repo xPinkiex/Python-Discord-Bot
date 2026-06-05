@@ -36,7 +36,7 @@ def _requires_voice(func):
 
 @tool
 def download_music(query: str) -> str:
-    """Download an mp3 audio file. Accepts either a YouTube URL or a song name. If given a song name, automatically searches YouTube for it. The current music library is listed above — check it before downloading, and if the song is already there use play_audio instead. Requires the music permission tag.
+    """Download an mp3 audio file. Accepts either a YouTube URL or a song name. If given a song name, automatically searches YouTube for it. The current music library is listed above — check it before downloading, and if the song is already there use play_audio instead.
     Args:
         query: A YouTube URL or a song name to search for on YouTube (e.g. "Jersey by Mayday Parade" or "https://youtube.com/watch?v=...").
     """
@@ -117,7 +117,7 @@ def download_music(query: str) -> str:
 
 @tool
 def list_music() -> str:
-    """List all downloaded mp3 files in the saved_sounds folder. Use this when the user wants to browse or play music. The full library is provided in context — use the index numbers to select tracks with play_audio. Requires the music permission tag.
+    """List all downloaded mp3 files in the saved_sounds folder. Use this when the user wants to browse or play music. The full library is provided in context — use the index numbers to select tracks with play_audio.
     """
     denied = _check_music()
     if denied:
@@ -131,7 +131,7 @@ def list_music() -> str:
 
 @tool
 def search_music(query: str) -> str:
-    """Search the music library by name. Use this when the user wants to play a song and you need to find its exact index. Always use this before play_audio if the user mentions a song by name instead of an index number. Requires the music permission tag.
+    """Search the music library by name. Use this when the user wants to play a song and you need to find its exact index. Always use this before play_audio if the user mentions a song by name instead of an index number.
     Args:
         query: Part of the song name to search for (e.g. "paradise", "mayday", "jersey").
     """
@@ -153,7 +153,7 @@ def search_music(query: str) -> str:
 @tool
 @_requires_voice
 def play_audio(index: int = -1, name: str = "") -> str:
-    """Play a downloaded mp3 file in the voice channel the user is currently in. If something is already playing, the song is added to the queue. Only works if the user is in a voice channel. You can provide either an index number from list_music, or a song name to fuzzy-match against the library. Always use search_music first if the user gives a song name. Requires the music permission tag.
+    """Play a downloaded mp3 file in the voice channel the user is currently in. If something is already playing, the song is added to the queue. Only works if the user is in a voice channel. You can provide either an index number from list_music, or a song name to fuzzy-match against the library. Always use search_music first if the user gives a song name.
     Args:
         index: The index number of the track from list_music (e.g. 0, 1, 2). Use -1 if providing a name instead.
         name: A song name to fuzzy-match against the library. Only used if index is -1 or not provided.
@@ -208,7 +208,7 @@ def play_audio(index: int = -1, name: str = "") -> str:
 @tool
 @_requires_voice
 def pause_audio() -> str:
-    """Pause the currently playing audio in voice chat. Requires the music permission tag.
+    """Pause the currently playing audio in voice chat.
     """
     denied = _check_music()
     if denied:
@@ -220,7 +220,7 @@ def pause_audio() -> str:
 @tool
 @_requires_voice
 def resume_audio() -> str:
-    """Resume paused audio in voice chat. Requires the music permission tag.
+    """Resume paused audio in voice chat.
     """
     denied = _check_music()
     if denied:
@@ -232,7 +232,7 @@ def resume_audio() -> str:
 @tool
 @_requires_voice
 def stop_audio() -> str:
-    """Stop audio playback in voice chat entirely and clear the song queue, loop, and shuffle state. Requires the music permission tag.
+    """Stop audio playback in voice chat entirely and clear the song queue, loop, and shuffle state.
     """
     denied = _check_music()
     if denied:
@@ -249,7 +249,7 @@ def stop_audio() -> str:
 @tool
 @_requires_voice
 def skip_audio() -> str:
-    """Skip the currently playing song and play the next one in the queue. Requires the music permission tag.
+    """Skip the currently playing song and play the next one in the queue.
     """
     denied = _check_music()
     if denied:
@@ -267,7 +267,7 @@ def skip_audio() -> str:
 @tool
 @_requires_voice
 def loop_audio(enabled: bool) -> str:
-    """Toggle loop mode. Requires the music permission tag.
+    """Toggle loop mode.
     Args:
         enabled: True to enable loop, False to disable.
     """
@@ -303,7 +303,7 @@ def loop_audio(enabled: bool) -> str:
 @tool
 @_requires_voice
 def music_shuffle_enabled(enabled: bool) -> str:
-    """Enable or disable shuffle mode. Requires the music permission tag.
+    """Enable or disable shuffle mode.
     Args:
         enabled: True to enable shuffle, False to disable shuffle.
     """
@@ -317,7 +317,7 @@ def music_shuffle_enabled(enabled: bool) -> str:
 
 @tool
 def queue() -> str:
-    """Show the current song queue. Requires the music permission tag."""
+    """Show the current song queue."""
     denied = _check_music()
     if denied:
         return denied
@@ -350,7 +350,7 @@ def queue() -> str:
 @tool
 @_requires_voice
 def clear_queue() -> str:
-    """Clear all songs from the queue without stopping the currently playing song. Requires the music permission tag.
+    """Clear all songs from the queue without stopping the currently playing song.
     """
     denied = _check_music()
     if denied:

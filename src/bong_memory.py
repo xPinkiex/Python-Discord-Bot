@@ -21,7 +21,7 @@ def _check_llm():
 
 @tool
 def save_memory(fact: str, category: str, importance: int) -> str:
-    """Save an important fact to long-term memory. Use this to remember things about users, preferences, inside jokes, or any information worth recalling later. Be selective — only save things that are genuinely useful to remember. If the fact contradicts or updates something already remembered, the old memory will be replaced automatically. Always use display names, never Discord IDs or mentions. Write facts normally — not in third person and never refer to yourself as "Bong" (e.g. write "Eve loves dubstep" not "Bong remembers that Eve loves dubstep", write "I prefer to be called a creecher" not "Bong's preference is to be called a creecher"). Requires the llm permission tag.
+    """Save an important fact to long-term memory. Use this to remember things about users, preferences, inside jokes, or any information worth recalling later. Be selective — only save things that are genuinely useful to remember. If the fact contradicts or updates something already remembered, the old memory will be replaced automatically. Always use display names, never Discord IDs or mentions. Write facts normally — not in third person and never refer to yourself as "Bong" (e.g. write "Eve loves dubstep" not "Bong remembers that Eve loves dubstep", write "I prefer to be called a creecher" not "Bong's preference is to be called a creecher").
     Args:
         fact: A concise fact written normally, using display names only, never <@ID> mentions. Do NOT write in third person or refer to yourself as "Bong" (e.g. "Eve loves dubstep and skrillex", "I prefer to be called a creecher, not a gremlin").
         category: The type of fact: "preference" (likes/dislikes), "fact" (general knowledge), "relationship" (how people relate to each other), "inside_joke" (recurring jokes), "instruction" (things to always remember or do).
@@ -102,7 +102,7 @@ def save_memory(fact: str, category: str, importance: int) -> str:
 
 @tool
 def recall_memories(query: str, about: str = "") -> str:
-    """Search long-term memories. Use this to recall things you've previously saved. Leave 'about' empty to search your own memories, or pass a display name to search memories about someone else. If the name is matched fuzzily, you'll see a warning — double-check with the user if unsure. Write queries normally, not in third person. Requires the llm permission tag.
+    """Search long-term memories. Use this to recall things you've previously saved. Leave 'about' empty to search your own memories, or pass a display name to search memories about someone else. If the name is matched fuzzily, you'll see a warning — double-check with the user if unsure. Write queries normally, not in third person.
     Args:
         query: What to search for, written normally — not in third person (e.g. "music preferences", "my favorite color", "who likes cars").
         about: The display name of the person whose memories to search. Leave empty to search memories about the current user. Use display names only, never Discord IDs.
@@ -121,7 +121,7 @@ def recall_memories(query: str, about: str = "") -> str:
 
 @tool
 def forget_memory(query: str) -> str:
-    """Delete a long-term memory that is no longer accurate or wanted. Use this when someone tells you to forget something, or when you realize a saved memory is wrong. Searches the current user's memories and deletes the best match. Always use display names in the query, never Discord IDs. Requires the llm permission tag.
+    """Delete a long-term memory that is no longer accurate or wanted. Use this when someone tells you to forget something, or when you realize a saved memory is wrong. Searches the current user's memories and deletes the best match. Always use display names in the query, never Discord IDs.
     Args:
         query: A description of the memory to forget using display names only (e.g. "Eve likes dubstep", "my favorite color").
     """
