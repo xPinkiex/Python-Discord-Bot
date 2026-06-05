@@ -171,54 +171,65 @@ def resolve_name_to_id(name: str) -> tuple[int | None, str | None]:
     return None, None
 
 
-def retrieve_memories(query: str, user_id: int, about_name: str = "", k: int = 10) -> str:
+def retrieve_memories(query: str, user_id: int | None, about_name: str = "", k: int = 10) -> str:
     try:
         target_user_id = user_id
         warning = None
+        skip_user_search = False
 
         if about_name:
             resolved_id, warning = resolve_name_to_id(about_name)
             if resolved_id is not None:
                 target_user_id = resolved_id
+            else:
+                # Name not resolved — skip user-scoped search, do general only
+                skip_user_search = True
+
+        # If user_id is None and no about_name, this is a general search
+        if target_user_id is None:
+            skip_user_search = True
 
         cleaned_query = _clean_for_embedding(query)
 
         seen_ids = set()
         all_results = []
 
-        # User-scoped search (always for current/target user)
-        user_results = _vector_db.similarity_search_with_relevance_scores(
-            cleaned_query, k=k, filter={"user_id": target_user_id}
-        )
-        for doc, score in user_results:
-            if score < MIN_RELEVANCE_USER:
-                continue
-            doc_id = doc.id if hasattr(doc, 'id') else doc.metadata.get("id")
-            norm = doc.page_content.strip().lower()
-            dedup_key = doc_id if doc_id is not None else norm
-            if dedup_key in seen_ids:
-                continue
-            seen_ids.add(dedup_key)
-            adjusted = score
-            category = str(doc.metadata.get("category", "fact"))
-            importance = doc.metadata.get("importance", 3)
-            if not isinstance(importance, (int, float)):
-                importance = 3
-            importance = int(importance)
-            saved_at = doc.metadata.get("saved_at")
-            last_accessed = doc.metadata.get("last_accessed")
-            adjusted = _apply_category_boost(adjusted, category)
-            adjusted = _apply_importance_boost(adjusted, importance)
-            adjusted = _apply_user_match_boost(adjusted, True)
-            adjusted = _apply_recency_boost(adjusted, saved_at, last_accessed)
-            all_results.append((doc, doc_id, adjusted))
+        # User-scoped search (for memories about a specific person)
+        if not skip_user_search and target_user_id is not None:
+            user_results = _vector_db.similarity_search_with_relevance_scores(
+                cleaned_query, k=k, filter={"user_id": target_user_id}
+            )
+            for doc, score in user_results:
+                if score < MIN_RELEVANCE_USER:
+                    continue
+                doc_id = doc.id if hasattr(doc, 'id') else doc.metadata.get("id")
+                norm = doc.page_content.strip().lower()
+                dedup_key = doc_id if doc_id is not None else norm
+                if dedup_key in seen_ids:
+                    continue
+                seen_ids.add(dedup_key)
+                adjusted = score
+                category = str(doc.metadata.get("category", "fact"))
+                importance = doc.metadata.get("importance", 3)
+                if not isinstance(importance, (int, float)):
+                    importance = 3
+                importance = int(importance)
+                saved_at = doc.metadata.get("saved_at")
+                last_accessed = doc.metadata.get("last_accessed")
+                adjusted = _apply_category_boost(adjusted, category)
+                adjusted = _apply_importance_boost(adjusted, importance)
+                adjusted = _apply_user_match_boost(adjusted, True)
+                adjusted = _apply_recency_boost(adjusted, saved_at, last_accessed)
+                all_results.append((doc, doc_id, adjusted))
 
-        # General search (for filling remaining slots)
+        # General search (fills remaining slots, includes user_id=None general facts)
         general_results = _vector_db.similarity_search_with_relevance_scores(
             cleaned_query, k=k * 3
         )
         for doc, score in general_results:
-            if score < MIN_RELEVANCE_GENERAL:
+            doc_user_id = doc.metadata.get("user_id")
+            threshold = MIN_RELEVANCE_USER if doc_user_id is None else MIN_RELEVANCE_GENERAL
+            if score < threshold:
                 continue
             doc_id = doc.id if hasattr(doc, 'id') else doc.metadata.get("id")
             norm = doc.page_content.strip().lower()
@@ -234,7 +245,7 @@ def retrieve_memories(query: str, user_id: int, about_name: str = "", k: int = 1
             importance = int(importance)
             saved_at = doc.metadata.get("saved_at")
             last_accessed = doc.metadata.get("last_accessed")
-            is_about_target = doc.metadata.get("user_id") == target_user_id
+            is_about_target = target_user_id is not None and doc_user_id == target_user_id
             adjusted = _apply_category_boost(adjusted, category)
             adjusted = _apply_importance_boost(adjusted, importance)
             adjusted = _apply_user_match_boost(adjusted, is_about_target)

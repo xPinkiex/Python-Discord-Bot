@@ -42,6 +42,21 @@ BOLD_CYAN = f"{CSI}1;36m"
 
 VALID_CATEGORIES = ("preference", "fact", "relationship", "inside_joke", "instruction")
 
+_CATEGORY_INDEX = {"1": "preference", "2": "fact", "3": "relationship", "4": "inside_joke", "5": "instruction"}
+
+
+def _resolve_category(arg: str) -> tuple[str, bool]:
+    """Resolve a category input (index or name) to a category string.
+    Returns (category, valid). If invalid, category defaults to 'fact'.
+    """
+    arg = arg.strip().lower()
+    if arg in _CATEGORY_INDEX:
+        return _CATEGORY_INDEX[arg], True
+    if arg in VALID_CATEGORIES:
+        return arg, True
+    return "fact", False
+
+
 CATEGORY_ICONS = {
     "preference": "\u2605",
     "instruction": "!",
@@ -167,7 +182,7 @@ def cmd_list(args):
     if args.user:
         user_id, display_name = _resolve_user(args.user)
         if user_id is None:
-            print(f"{RED}User not found: {args.user}{RESET}")
+            print(f"{RED}Name not found: {args.user}{RESET}")
             return
 
     items = _get_all_memories(user_id)
@@ -199,7 +214,7 @@ def cmd_list(args):
             count = 0
 
         print(f"  {c}{BOLD}{i:>3}.{RESET} {c}{text}{RESET}")
-        print(f"  {c}     user: {user_name}  |  {category}  |  {importance}{RESET}")
+        print(f"  {c}     about: {user_name}  |  {category}  |  {importance}{RESET}")
         print(f"  {c}     saved: {saved}  |  accessed: {accessed}  |  used {count}x{RESET}")
         print()
 
@@ -210,7 +225,7 @@ def cmd_search(args):
     if args.user:
         user_id, display_name = _resolve_user(args.user)
         if user_id is None:
-            print(f"{RED}User not found: {args.user}{RESET}")
+            print(f"{RED}Name not found: {args.user}{RESET}")
             return
 
     k = args.k or 10
@@ -231,7 +246,7 @@ def cmd_search(args):
 
     header = f"{BOLD}Results for \"{args.search}\""
     if user_id:
-        header += f" (user: {display_name})"
+        header += f" (about: {display_name})"
     header += RESET
     print(header)
     print()
@@ -245,19 +260,39 @@ def cmd_search(args):
         saved = _format_timestamp(meta.get("saved_at"))
 
         print(f"  {c}{BOLD}{i:>3}.{RESET} {c}[{score:.2f}] {doc.page_content}{RESET}")
-        print(f"  {c}     user: {user_name}  |  {category}  |  {importance}  |  saved: {saved}{RESET}")
+        print(f"  {c}     about: {user_name}  |  {category}  |  {importance}  |  saved: {saved}{RESET}")
         print()
 
 
-def cmd_add(args):
-    user_id = None
-    display_name = None
-    if args.user:
-        user_id, display_name = _resolve_user(args.user)
-        if user_id is None:
-            print(f"{RED}User not found: {args.user}{RESET}")
-            return
+def _resolve_about_interactive() -> tuple[int | None, str]:
+    """Prompt interactively for who a fact is about.
+    Returns (user_id, display_name). user_id=None means general fact.
+    """
+    while True:
+        user_str = input(f"{BOLD}About (display name or ID, Enter for general):{RESET} ").strip()
+        if not user_str:
+            return None, ""
+        resolved_id, resolved_name = _resolve_user(user_str)
+        if resolved_id is not None:
+            return resolved_id, resolved_name or user_str
+        while True:
+            fallback = input(
+                f"{YELLOW}Couldn't find '{user_str}'.{RESET}\n"
+                f"Enter their {BOLD}Discord user ID{RESET}, or press Enter to save as a general fact: "
+            ).strip()
+            if not fallback:
+                return None, ""
+            if fallback.isdigit():
+                uid = int(fallback)
+                name = input(f"{BOLD}Display name for this user:{RESET} ").strip()
+                return uid, name or fallback
+            user_str = fallback
+            resolved_id, resolved_name = _resolve_user(user_str)
+            if resolved_id is not None:
+                return resolved_id, resolved_name or user_str
 
+
+def cmd_add(args):
     text = args.add
     if not text:
         text = input(f"{BOLD}Enter memory text:{RESET} ").strip()
@@ -265,22 +300,44 @@ def cmd_add(args):
             print("Cancelled.")
             return
 
-    print(f"\n  Category options: {', '.join(VALID_CATEGORIES)}")
-    category = input(f"{BOLD}Category [{DIM}fact{RESET}{BOLD}]:{RESET} ").strip().lower()
-    if not category or category not in VALID_CATEGORIES:
-        category = "fact"
+    if args.category is not None:
+        category, valid = _resolve_category(args.category)
+        if not valid:
+            print(f"{RED}Invalid category: {args.category}. Use 1-5 or a category name.{RESET}")
+            return
+    else:
+        print(f"  Category:")
+        print(f"    1. preference   2. fact   3. relationship   4. inside_joke   5. instruction")
+        cat_input = input(f"{BOLD}Category [{DIM}2{RESET}{BOLD}]:{RESET} ").strip()
+        if cat_input:
+            category, valid = _resolve_category(cat_input)
+            if not valid:
+                print(f"  {RED}Invalid category. Defaulting to fact.{RESET}")
+                category = "fact"
+        else:
+            category = "fact"
 
-    print(f"  Importance: 1=trivial, 2=low, 3=normal, 4=high, 5=critical")
-    imp_str = input(f"{BOLD}Importance [{DIM}3{RESET}{BOLD}]:{RESET} ").strip()
-    try:
-        importance = max(1, min(5, int(imp_str)))
-    except (ValueError, TypeError):
-        importance = 3
+    if args.importance is not None:
+        importance = max(1, min(5, args.importance))
+    else:
+        print(f"  Importance: 1=trivial, 2=low, 3=normal, 4=high, 5=critical")
+        imp_str = input(f"{BOLD}Importance [{DIM}3{RESET}{BOLD}]:{RESET} ").strip()
+        try:
+            importance = max(1, min(5, int(imp_str)))
+        except (ValueError, TypeError):
+            importance = 3
 
-    if not user_id:
-        user_str = input(f"{BOLD}User (display name or ID, Enter for none):{RESET} ").strip()
-        if user_str:
-            user_id, display_name = _resolve_user(user_str)
+    about_arg = args.about if hasattr(args, "about") and args.about else None
+    if about_arg is None and args.user:
+        about_arg = args.user
+
+    if about_arg is not None:
+        user_id, display_name = _resolve_user(about_arg)
+        if user_id is None:
+            print(f"{RED}Name not found: {about_arg}{RESET}")
+            return
+    else:
+        user_id, display_name = _resolve_about_interactive()
 
     clean_text = bong_memory_helpers._clean_for_embedding(text)
     if not clean_text:
@@ -293,6 +350,7 @@ def cmd_add(args):
         "saved_at": datetime.now().timestamp(),
         "last_accessed": datetime.now().timestamp(),
         "access_count": 0,
+        "user_name": "",
     }
     if user_id is not None:
         meta["user_id"] = user_id
@@ -301,7 +359,7 @@ def cmd_add(args):
     print()
     print(f"  {BOLD}Preview:{RESET}")
     print(f"  {CYAN}{clean_text}{RESET}")
-    print(f"  category: {category}  |  importance: {importance}  |  user: {display_name or 'none'}")
+    print(f"  category: {category}  |  importance: {importance}  |  about: {display_name or 'general'}")
 
     confirm = input(f"\n{BOLD}Add this memory? [y/N]:{RESET} ").strip().lower()
     if confirm != "y":
@@ -318,7 +376,7 @@ def cmd_edit(args):
     if args.user:
         user_id, display_name = _resolve_user(args.user)
         if user_id is None:
-            print(f"{RED}User not found: {args.user}{RESET}")
+            print(f"{RED}Name not found: {args.user}{RESET}")
             return
 
     items = _get_all_memories(user_id)
@@ -355,7 +413,7 @@ def cmd_edit(args):
         for i, (doc, score) in enumerate(results, 1):
             print(f"  {i}. [{score:.2f}] {doc.page_content}")
             m = doc.metadata
-            print(f"     user: {m.get('user_name', '?')}  |  {_format_category(m.get('category'))}  |  {_format_importance(m.get('importance'))}")
+            print(f"     about: {m.get('user_name', '?')}  |  {_format_category(m.get('category'))}  |  {_format_importance(m.get('importance'))}")
 
         choice = input(f"\n{BOLD}Enter index to edit (or Enter to cancel):{RESET} ").strip()
         if not choice or not choice.isdigit():
@@ -372,7 +430,7 @@ def cmd_edit(args):
 
     print(f"\n  {BOLD}Editing memory:{RESET}")
     print(f"  {CYAN}{text}{RESET}")
-    print(f"  user: {meta.get('user_name', 'none')}  |  {_format_category(meta.get('category'))}  |  {_format_importance(meta.get('importance'))}")
+    print(f"  about: {meta.get('user_name', 'none')}  |  {_format_category(meta.get('category'))}  |  {_format_importance(meta.get('importance'))}")
     print(f"  saved: {_format_timestamp(meta.get('saved_at'))}  |  accessed: {_format_timestamp(meta.get('last_accessed'))}  |  used {meta.get('access_count', 0)}x")
     print()
 
@@ -382,7 +440,7 @@ def cmd_edit(args):
         print(f"    1. Text")
         print(f"    2. Category (current: {meta.get('category', 'fact')})")
         print(f"    3. Importance (current: {meta.get('importance', 3)})")
-        print(f"    4. User (current: {meta.get('user_name', 'none')})")
+        print(f"    4. About (current: {meta.get('user_name', 'none')})")
         print(f"    5. {GREEN}Apply changes{RESET}")
         print(f"    6. Cancel")
 
@@ -393,12 +451,14 @@ def cmd_edit(args):
             if new_text:
                 changes["text"] = new_text
         elif field == "2":
-            print(f"  Options: {', '.join(VALID_CATEGORIES)}")
-            new_cat = input(f"  {BOLD}New category [{DIM}{meta.get('category', 'fact')}{RESET}{BOLD}]:{RESET} ").strip().lower()
-            if new_cat and new_cat in VALID_CATEGORIES:
-                changes["category"] = new_cat
-            elif new_cat:
-                print(f"  {RED}Invalid category.{RESET}")
+            print(f"  1. preference  2. fact  3. relationship  4. inside_joke  5. instruction")
+            new_cat = input(f"  {BOLD}New category [{DIM}{meta.get('category', 'fact')}{RESET}{BOLD}]:{RESET} ").strip()
+            if new_cat:
+                resolved, valid = _resolve_category(new_cat)
+                if valid:
+                    changes["category"] = resolved
+                else:
+                    print(f"  {RED}Invalid category.{RESET}")
         elif field == "3":
             print(f"  1=trivial, 2=low, 3=normal, 4=high, 5=critical")
             imp_str = input(f"  {BOLD}New importance [{DIM}{meta.get('importance', 3)}{RESET}{BOLD}]:{RESET} ").strip()
@@ -412,7 +472,7 @@ def cmd_edit(args):
                 if imp_str:
                     print(f"  {RED}Invalid number.{RESET}")
         elif field == "4":
-            new_user_str = input(f"  {BOLD}New user (display name or ID, or 'none' to clear) [{DIM}{meta.get('user_name', 'none')}{RESET}{BOLD}]:{RESET} ").strip()
+            new_user_str = input(f"  {BOLD}New about (display name or ID, or 'none' to clear) [{DIM}{meta.get('user_name', 'none')}{RESET}{BOLD}]:{RESET} ").strip()
             if new_user_str.lower() == "none":
                 changes["user_id"] = None
                 changes["user_name"] = ""
@@ -422,7 +482,7 @@ def cmd_edit(args):
                     changes["user_id"] = new_uid
                     changes["user_name"] = new_uname
                 else:
-                    print(f"  {RED}User not found.{RESET}")
+                    print(f"  {RED}Name not found.{RESET}")
         elif field == "5":
             break
         elif field == "6":
@@ -464,7 +524,7 @@ def cmd_edit(args):
     if "user_id" in changes:
         old_user = meta.get("user_name", "none")
         new_user = changes.get("user_name", str(changes.get("user_id", "")))
-        print(f"  user: {old_user} -> {new_user}")
+        print(f"  about: {old_user} -> {new_user}")
 
     confirm = input(f"\n  {BOLD}Apply changes? [y/N]:{RESET} ").strip().lower()
     if confirm != "y":
@@ -490,7 +550,7 @@ def cmd_delete(args):
     if args.user:
         user_id, display_name = _resolve_user(args.user)
         if user_id is None:
-            print(f"{RED}User not found: {args.user}{RESET}")
+            print(f"{RED}Name not found: {args.user}{RESET}")
             return
 
     items = _get_all_memories(user_id)
@@ -533,7 +593,7 @@ def cmd_delete(args):
             uid = doc.id if hasattr(doc, 'id') else m.get("id")
             c = CYAN if shown % 2 == 0 else YELLOW
             print(f"  {c}{shown:>3}. [{score:.2f}] {doc.page_content}{RESET}")
-            print(f"  {c}     user: {m.get('user_name', '?')}  |  {_format_category(m.get('category'))}  |  {_format_importance(m.get('importance'))}{RESET}")
+            print(f"  {c}     about: {m.get('user_name', '?')}  |  {_format_category(m.get('category'))}  |  {_format_importance(m.get('importance'))}{RESET}")
             to_delete.append((uid, doc.page_content, m))
 
         if not to_delete:
@@ -563,7 +623,7 @@ def cmd_delete(args):
     for i, (_, text, meta) in enumerate(to_delete, 1):
         c = RED
         print(f"  {c}{i}. {text}{RESET}")
-        print(f"  {c}   user: {meta.get('user_name', '?')}  |  {_format_category(meta.get('category'))}  |  {_format_importance(meta.get('importance'))}{RESET}")
+        print(f"  {c}   about: {meta.get('user_name', '?')}  |  {_format_category(meta.get('category'))}  |  {_format_importance(meta.get('importance'))}{RESET}")
 
     if args.dry_run:
         print(f"\n  {YELLOW}Dry run — no changes made.{RESET}")
@@ -588,7 +648,7 @@ def cmd_forget_user(args):
     user_id, display_name = _resolve_user(name_or_id)
 
     if user_id is None:
-        print(f"{RED}User not found: {name_or_id}{RESET}")
+        print(f"{RED}Name not found: {name_or_id}{RESET}")
         return
 
     items = _get_all_memories(user_id)
@@ -656,7 +716,7 @@ def cmd_expire(args):
         importance = meta.get("importance", 3)
         saved = _format_timestamp(meta.get("saved_at"))
         days_ago = int((now - max(float(meta.get("saved_at", 0)), float(meta.get("last_accessed", 0)))) / 86400)
-        print(f"  {c}{i}. user: {user_name}  |  importance: {importance}  |  saved: {saved}  |  {days_ago} days old{RESET}")
+        print(f"  {c}{i}. about: {user_name}  |  importance: {importance}  |  saved: {saved}  |  {days_ago} days old{RESET}")
     if len(expired) > 20:
         print(f"  {DIM}... and {len(expired) - 20} more{RESET}")
 
@@ -854,26 +914,30 @@ def main():
         description="Manage Bong's long-term memory (ChromaDB)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  %(prog)s -l                          List all memories
-  %(prog)s -l -u Eve                   List Eve's memories
-  %(prog)s -s "dubstep"                Search for memories about dubstep
+  %(prog)s -l                           List all memories
+  %(prog)s -l -u Eve                    List Eve's memories
+  %(prog)s -s "dubstep"                 Search for memories about dubstep
   %(prog)s -s "likes cars" -u RadonFox  Search RadonFox's memories
-  %(prog)s -a                           Add a memory (interactive)
-  %(prog)s -e 3                         Edit memory #3
-  %(prog)s -e "dubstep"                 Edit by search query
-  %(prog)s -d 5                         Delete memory #5
-  %(prog)s -d "old fact" --dry-run      Preview deletion
-  %(prog)s --forget-user Eve            Delete all of Eve's memories
-  %(prog)s --expire                     Remove expired memories
-  %(prog)s --backup                     Back up all memories to JSON
-  %(prog)s --restore backup.json        Restore from a backup (re-embeds by default)
-  %(prog)s --restore backup.json --fast Restore without re-embedding
-  %(prog)s --restore backup.json --drop Reset DB to backup snapshot""",
+  %(prog)s -a                            Add a memory (interactive)
+  %(prog)s -a "fact text" --about Eve --category 1 --importance 4
+  %(prog)s -e 3                          Edit memory #3
+  %(prog)s -e "dubstep"                  Edit by search query
+  %(prog)s -d 5                          Delete memory #5
+  %(prog)s -d "old fact" --dry-run       Preview deletion
+  %(prog)s --forget-user Eve             Delete all of Eve's memories
+  %(prog)s --expire                      Remove expired memories
+  %(prog)s --backup                      Back up all memories to JSON
+  %(prog)s --restore backup.json         Restore from a backup (re-embeds by default)
+  %(prog)s --restore backup.json --fast  Restore without re-embedding
+  %(prog)s --restore backup.json --drop  Reset DB to backup snapshot""",
     )
     parser.add_argument("-l", "--list", action="store_true", help="List all memories")
     parser.add_argument("-s", "--search", type=str, help="Search memories by query")
     parser.add_argument("-k", type=int, default=10, help="Number of search results (default: 10)")
     parser.add_argument("-a", "--add", nargs="?", const="", help="Add a memory. Provide text or leave blank for interactive prompt")
+    parser.add_argument("-c", "--category", type=str, help="With --add: category (1-5 index or name). If omitted, prompts interactively")
+    parser.add_argument("-i", "--importance", type=int, help="With --add: importance 1-5. If omitted, prompts interactively")
+    parser.add_argument("--about", type=str, help="With --add: who the fact is about (display name or Discord ID). If omitted, prompts interactively")
     parser.add_argument("-e", "--edit", type=str, help="Edit a memory by index or search query")
     parser.add_argument("-d", "--delete", type=str, help="Delete memory(ies) by index or search query")
     parser.add_argument("--forget-user", type=str, metavar="NAME_OR_ID", help="Delete all memories for a user")
@@ -882,7 +946,7 @@ def main():
     parser.add_argument("--restore", type=str, metavar="PATH", help="Restore memories from a backup JSON file")
     parser.add_argument("--drop", action="store_true", help="With --restore: wipe existing DB first (full reset to backup)")
     parser.add_argument("--fast", action="store_true", help="With --restore: use pre-computed embeddings (skip re-embedding)")
-    parser.add_argument("-u", "--user", type=str, help="Filter by user (display name or Discord ID)")
+    parser.add_argument("-u", "--user", type=str, help="Filter by who the memory is about (display name or Discord ID)")
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without making them (works with -d, --forget-user, --expire)")
 
     args = parser.parse_args()

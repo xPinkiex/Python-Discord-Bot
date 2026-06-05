@@ -1111,7 +1111,30 @@ class BongCog(commands.Cog):
             persist.flush_all()
 
     async def cog_unload(self):
-        """Flush all persist stores to disk when the cog is unloaded (shutdown)."""
+        """Gracefully shut down: stop voice listeners, disconnect from VC, flush data, cancel tasks."""
+        import voice_commands as _vc
+
+        # Stop all voice command listeners
+        for gid in list(_vc._active_listeners):
+            try:
+                sink = _vc._active_listeners[gid]
+                sink._stopped = True
+                if sink._silence_task and not sink._silence_task.done():
+                    sink._silence_task.cancel()
+            except Exception:
+                pass
+        _vc._active_listeners.clear()
+        _vc._is_listening.clear()
+
+        # Disconnect from all voice channels and clear status
+        for guild in self.bot.guilds:
+            if guild.voice_client:
+                try:
+                    await _set_voice_status(guild, None)
+                    await guild.voice_client.disconnect()
+                except Exception:
+                    pass
+
         persist.flush_all()
         self.reminder_task.cancel()
         self.persist_task.cancel()

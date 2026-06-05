@@ -22,10 +22,10 @@ def make_doc(doc_id, text, user_id=None, user_name="", category="fact", importan
         "saved_at": saved_at or NOW,
         "last_accessed": last_accessed or NOW,
         "access_count": access_count,
+        "user_name": user_name,
     }
     if user_id is not None:
         meta["user_id"] = user_id
-        meta["user_name"] = user_name
     doc = MagicMock()
     doc.page_content = text
     doc.metadata = meta
@@ -69,6 +69,9 @@ def fake_args(**overrides):
         "search": None,
         "k": 10,
         "add": None,
+        "category": None,
+        "importance": None,
+        "about": None,
         "edit": None,
         "delete": None,
         "forget_user": None,
@@ -535,13 +538,86 @@ class TestResolveUser:
         assert name is None
 
 
-# ========== cmd_add ==========
+# ========== _resolve_category ==========
+
+class TestResolveCategory:
+    def test_index_1(self):
+        cat, valid = mm._resolve_category("1")
+        assert cat == "preference"
+        assert valid is True
+
+    def test_index_2(self):
+        cat, valid = mm._resolve_category("2")
+        assert cat == "fact"
+        assert valid is True
+
+    def test_index_3(self):
+        cat, valid = mm._resolve_category("3")
+        assert cat == "relationship"
+        assert valid is True
+
+    def test_index_4(self):
+        cat, valid = mm._resolve_category("4")
+        assert cat == "inside_joke"
+        assert valid is True
+
+    def test_index_5(self):
+        cat, valid = mm._resolve_category("5")
+        assert cat == "instruction"
+        assert valid is True
+
+    def test_name_preference(self):
+        cat, valid = mm._resolve_category("preference")
+        assert cat == "preference"
+        assert valid is True
+
+    def test_name_fact(self):
+        cat, valid = mm._resolve_category("fact")
+        assert cat == "fact"
+        assert valid is True
+
+    def test_name_relationship(self):
+        cat, valid = mm._resolve_category("relationship")
+        assert cat == "relationship"
+        assert valid is True
+
+    def test_name_inside_joke(self):
+        cat, valid = mm._resolve_category("inside_joke")
+        assert cat == "inside_joke"
+        assert valid is True
+
+    def test_name_instruction(self):
+        cat, valid = mm._resolve_category("instruction")
+        assert cat == "instruction"
+        assert valid is True
+
+    def test_invalid_returns_fact(self):
+        cat, valid = mm._resolve_category("xyz")
+        assert cat == "fact"
+        assert valid is False
+
+    def test_empty_returns_fact(self):
+        cat, valid = mm._resolve_category("")
+        assert cat == "fact"
+        assert valid is False
+
+    def test_case_insensitive(self):
+        cat, valid = mm._resolve_category("PREFERENCE")
+        assert cat == "preference"
+        assert valid is True
+
+    def test_whitespace(self):
+        cat, valid = mm._resolve_category("  1  ")
+        assert cat == "preference"
+        assert valid is True
+
+
 
 class TestCmdAdd:
     @patch.object(bong_memory_helpers._vector_db, 'add_texts')
     @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
     def test_add_with_defaults(self, mock_clean, mock_add):
-        inputs = ["fact", "3", "", "y"]
+        inputs = ["", "", "", "y"]
         with patch('builtins.input', side_effect=inputs), \
              patch('builtins.print'):
             mm.cmd_add(fake_args(add="test memory"))
@@ -552,11 +628,12 @@ class TestCmdAdd:
         assert texts == ["test memory"]
         assert metas[0]["category"] == "fact"
         assert metas[0]["importance"] == 3
+        assert metas[0]["user_name"] == ""
 
     @patch.object(bong_memory_helpers._vector_db, 'add_texts')
     @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
     def test_add_with_category_and_importance(self, mock_clean, mock_add):
-        inputs = ["preference", "5", "", "y"]
+        inputs = ["1", "5", "", "y"]
         with patch('builtins.input', side_effect=inputs), \
              patch('builtins.print'):
             mm.cmd_add(fake_args(add="I love cats"))
@@ -568,7 +645,7 @@ class TestCmdAdd:
     @patch.object(bong_memory_helpers._vector_db, 'add_texts')
     @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
     def test_add_cancelled(self, mock_clean, mock_add):
-        inputs = ["fact", "3", "", "n"]
+        inputs = ["", "", "", "n"]
         with patch('builtins.input', side_effect=inputs), \
              patch('builtins.print'):
             mm.cmd_add(fake_args(add="test memory"))
@@ -577,7 +654,7 @@ class TestCmdAdd:
     @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: "")
     def test_add_empty_after_clean(self, mock_clean):
         buf = StringIO()
-        with patch('builtins.input'), \
+        with patch('builtins.input', side_effect=["", "", ""]), \
              patch('sys.stdout', buf):
             mm.cmd_add(fake_args(add="   "))
         assert "empty" in buf.getvalue().lower()
@@ -586,7 +663,7 @@ class TestCmdAdd:
     @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
     @patch.object(mm, '_resolve_user', return_value=(111, "Eve"))
     def test_add_with_user(self, mock_resolve, mock_clean, mock_add):
-        inputs = ["preference", "4", "y"]
+        inputs = ["1", "4", "y"]
         args = fake_args(add="I like dubstep", user="Eve")
         with patch('builtins.input', side_effect=inputs), \
              patch('builtins.print'):
@@ -599,6 +676,7 @@ class TestCmdAdd:
     def test_add_user_not_found(self):
         buf = StringIO()
         with patch.object(mm, '_resolve_user', return_value=(None, None)), \
+             patch('builtins.input', side_effect=["", "", ""]), \
              patch('sys.stdout', buf):
             mm.cmd_add(fake_args(add="test", user="Nobody"))
         assert "not found" in buf.getvalue().lower()
@@ -606,7 +684,7 @@ class TestCmdAdd:
     @patch.object(bong_memory_helpers._vector_db, 'add_texts')
     @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
     def test_add_invalid_category_defaults_to_fact(self, mock_clean, mock_add):
-        inputs = ["invalid_category", "3", "", "y"]
+        inputs = ["invalid_category", "", "", "y"]
         with patch('builtins.input', side_effect=inputs), \
              patch('builtins.print'):
             mm.cmd_add(fake_args(add="test memory"))
@@ -617,13 +695,156 @@ class TestCmdAdd:
     @patch.object(bong_memory_helpers._vector_db, 'add_texts')
     @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
     def test_add_importance_clamped(self, mock_clean, mock_add):
-        inputs = ["fact", "10", "", "y"]
+        inputs = ["", "10", "", "y"]
         with patch('builtins.input', side_effect=inputs), \
              patch('builtins.print'):
             mm.cmd_add(fake_args(add="test memory"))
         mock_add.assert_called_once()
         metas = mock_add.call_args[1]["metadatas"]
         assert metas[0]["importance"] == 5
+
+    @patch.object(bong_memory_helpers._vector_db, 'add_texts')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    def test_add_category_flag(self, mock_clean, mock_add):
+        inputs = ["", "", "y"]
+        with patch('builtins.input', side_effect=inputs), \
+             patch('builtins.print'):
+            mm.cmd_add(fake_args(add="test memory", category="1"))
+        mock_add.assert_called_once()
+        metas = mock_add.call_args[1]["metadatas"]
+        assert metas[0]["category"] == "preference"
+
+    @patch.object(bong_memory_helpers._vector_db, 'add_texts')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    def test_add_category_flag_by_name(self, mock_clean, mock_add):
+        inputs = ["", "", "y"]
+        with patch('builtins.input', side_effect=inputs), \
+             patch('builtins.print'):
+            mm.cmd_add(fake_args(add="test memory", category="instruction"))
+        mock_add.assert_called_once()
+        metas = mock_add.call_args[1]["metadatas"]
+        assert metas[0]["category"] == "instruction"
+
+    def test_add_category_flag_invalid_aborts(self):
+        buf = StringIO()
+        with patch('builtins.input'), \
+             patch('sys.stdout', buf):
+            mm.cmd_add(fake_args(add="test memory", category="xyz"))
+        assert "invalid category" in buf.getvalue().lower()
+
+    @patch.object(bong_memory_helpers._vector_db, 'add_texts')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    def test_add_importance_flag(self, mock_clean, mock_add):
+        inputs = ["", "", "y"]
+        with patch('builtins.input', side_effect=inputs), \
+             patch('builtins.print'):
+            mm.cmd_add(fake_args(add="test memory", importance=5))
+        mock_add.assert_called_once()
+        metas = mock_add.call_args[1]["metadatas"]
+        assert metas[0]["importance"] == 5
+
+    @patch.object(bong_memory_helpers._vector_db, 'add_texts')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch.object(mm, '_resolve_user', return_value=(111, "Eve"))
+    def test_add_about_flag(self, mock_resolve, mock_clean, mock_add):
+        inputs = ["y"]
+        with patch('builtins.input', side_effect=inputs), \
+             patch('builtins.print'):
+            mm.cmd_add(fake_args(add="test", category="2", importance=3, about="Eve"))
+        mock_add.assert_called_once()
+        metas = mock_add.call_args[1]["metadatas"]
+        assert metas[0]["user_id"] == 111
+        assert metas[0]["user_name"] == "Eve"
+
+    def test_add_about_flag_not_found_aborts(self):
+        buf = StringIO()
+        with patch.object(mm, '_resolve_user', return_value=(None, None)), \
+             patch('builtins.input'), \
+             patch('sys.stdout', buf):
+            mm.cmd_add(fake_args(add="test", category="2", importance=3, about="Nobody"))
+        assert "not found" in buf.getvalue().lower()
+
+    @patch.object(bong_memory_helpers._vector_db, 'add_texts')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    def test_add_about_interactive_general(self, mock_clean, mock_add):
+        inputs = ["", "", "", "y"]
+        with patch('builtins.input', side_effect=inputs), \
+             patch('builtins.print'):
+            mm.cmd_add(fake_args(add="test memory"))
+        mock_add.assert_called_once()
+        metas = mock_add.call_args[1]["metadatas"]
+        assert "user_id" not in metas[0]
+        assert metas[0]["user_name"] == ""
+
+    @patch.object(bong_memory_helpers._vector_db, 'add_texts')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch.object(mm, '_resolve_user', return_value=(111, "Eve"))
+    def test_add_about_interactive_resolved(self, mock_resolve, mock_clean, mock_add):
+        inputs = ["2", "3", "Eve", "y"]
+        with patch('builtins.input', side_effect=inputs), \
+             patch('builtins.print'):
+            mm.cmd_add(fake_args(add="test memory"))
+        mock_add.assert_called_once()
+        metas = mock_add.call_args[1]["metadatas"]
+        assert metas[0]["user_id"] == 111
+        assert metas[0]["user_name"] == "Eve"
+
+    @patch.object(bong_memory_helpers._vector_db, 'add_texts')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch.object(mm, '_resolve_user')
+    def test_add_about_interactive_not_found_then_id(self, mock_resolve, mock_clean, mock_add):
+        def resolve_side_effect(arg):
+            if arg == "Unknown":
+                return (None, None)
+            return (999, "CustomUser")
+        mock_resolve.side_effect = resolve_side_effect
+        inputs = ["2", "3", "Unknown", "999", "CustomUser", "y"]
+        with patch('builtins.input', side_effect=inputs), \
+             patch('builtins.print'):
+            mm.cmd_add(fake_args(add="test memory"))
+        mock_add.assert_called_once()
+        metas = mock_add.call_args[1]["metadatas"]
+        assert metas[0]["user_id"] == 999
+        assert metas[0]["user_name"] == "CustomUser"
+
+    @patch.object(bong_memory_helpers._vector_db, 'add_texts')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch.object(mm, '_resolve_user')
+    def test_add_about_interactive_not_found_then_general(self, mock_resolve, mock_clean, mock_add):
+        mock_resolve.return_value = (None, None)
+        inputs = ["2", "3", "Unknown", "", "y"]
+        with patch('builtins.input', side_effect=inputs), \
+             patch('builtins.print'):
+            mm.cmd_add(fake_args(add="test memory"))
+        mock_add.assert_called_once()
+        metas = mock_add.call_args[1]["metadatas"]
+        assert "user_id" not in metas[0]
+        assert metas[0]["user_name"] == ""
+
+    @patch.object(bong_memory_helpers._vector_db, 'add_texts')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    def test_add_general_fact_always_has_user_name(self, mock_clean, mock_add):
+        inputs = ["", "", "", "y"]
+        with patch('builtins.input', side_effect=inputs), \
+             patch('builtins.print'):
+            mm.cmd_add(fake_args(add="general fact"))
+        mock_add.assert_called_once()
+        metas = mock_add.call_args[1]["metadatas"]
+        assert "user_name" in metas[0]
+        assert metas[0]["user_name"] == ""
+
+    @patch.object(bong_memory_helpers._vector_db, 'add_texts')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch.object(mm, '_resolve_user', return_value=(111, "Eve"))
+    def test_add_user_flag_used_as_about(self, mock_resolve, mock_clean, mock_add):
+        inputs = ["2", "3", "y"]
+        with patch('builtins.input', side_effect=inputs), \
+             patch('builtins.print'):
+            mm.cmd_add(fake_args(add="test memory", user="Eve"))
+        mock_add.assert_called_once()
+        metas = mock_add.call_args[1]["metadatas"]
+        assert metas[0]["user_id"] == 111
+        assert metas[0]["user_name"] == "Eve"
 
 
 # ========== cmd_edit ==========

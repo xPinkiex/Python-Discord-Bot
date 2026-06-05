@@ -270,3 +270,209 @@ class TestExpireOldMemories:
         assert base == 30
         for importance, expected_days in [(1, 30), (2, 60), (3, 90), (4, 120), (5, 150)]:
             assert base * importance == expected_days
+
+
+# ========== save_memory ==========
+
+class TestSaveMemory:
+    @patch.object(bong_memory_helpers, '_vector_db')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch.object(bong_memory_helpers, 'tiered_dedup', return_value=(None, None))
+    @patch.object(bong_memory_helpers, 'resolve_name_to_id', return_value=(111, None))
+    @patch('bong_memory._check_llm', return_value=None)
+    def test_save_with_about_resolved(self, mock_check, mock_resolve, mock_dedup, mock_clean, mock_db):
+        import bong_memory
+        result = bong_memory.save_memory.invoke({"fact": "Eve loves dubstep", "category": "preference", "importance": 4, "about": "Eve"})
+        assert "Remembered" in result
+        call_metas = mock_db.add_texts.call_args[1]["metadatas"]
+        assert call_metas[0]["user_id"] == 111
+        assert call_metas[0]["user_name"] == "Eve"
+
+    @patch.object(bong_memory_helpers, '_vector_db')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch.object(bong_memory_helpers, 'tiered_dedup', return_value=(None, None))
+    @patch.object(bong_memory_helpers, 'resolve_name_to_id', return_value=(None, None))
+    @patch('bong_memory._check_llm', return_value=None)
+    def test_save_unresolved_about_general_fact(self, mock_check, mock_resolve, mock_dedup, mock_clean, mock_db):
+        import bong_memory
+        result = bong_memory.save_memory.invoke({"fact": "unknown person likes cars", "category": "fact", "importance": 3, "about": "UnknownPerson"})
+        assert "Couldn't find" in result
+        assert "general fact" in result.lower()
+        call_metas = mock_db.add_texts.call_args[1]["metadatas"]
+        assert "user_id" not in call_metas[0]
+        assert call_metas[0]["user_name"] == ""
+
+    @patch.object(bong_memory_helpers, '_vector_db')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch.object(bong_memory_helpers, 'tiered_dedup', return_value=(None, None))
+    @patch('bong_memory._check_llm', return_value=None)
+    def test_save_general_fact_has_user_name(self, mock_check, mock_dedup, mock_clean, mock_db):
+        import bong_memory
+        result = bong_memory.save_memory.invoke({"fact": "the server has a meme channel", "category": "fact", "importance": 2, "about": ""})
+        assert "Remembered" in result
+        call_metas = mock_db.add_texts.call_args[1]["metadatas"]
+        assert "user_name" in call_metas[0]
+        assert call_metas[0]["user_name"] == ""
+        assert "user_id" not in call_metas[0]
+
+    @patch.object(bong_memory_helpers, '_vector_db')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch.object(bong_memory_helpers, 'tiered_dedup', return_value=(None, None))
+    @patch.object(bong_memory_helpers, 'resolve_name_to_id', return_value=(222, None))
+    @patch('bong_memory._check_llm', return_value=None)
+    def test_save_with_about_includes_user_id(self, mock_check, mock_resolve, mock_dedup, mock_clean, mock_db):
+        import bong_memory
+        result = bong_memory.save_memory.invoke({"fact": "RadonFox likes protogen", "category": "preference", "importance": 4, "about": "RadonFox"})
+        assert "Remembered" in result
+        call_metas = mock_db.add_texts.call_args[1]["metadatas"]
+        assert call_metas[0]["user_id"] == 222
+        assert call_metas[0]["user_name"] == "RadonFox"
+
+
+# ========== forget_memory ==========
+
+class TestForgetMemory:
+    @patch.object(bong_memory_helpers, '_vector_db')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch('bong_memory._check_llm', return_value=None)
+    @patch('bong_tools.current_user_id', 111)
+    def test_forget_own_memory(self, mock_check, mock_clean, mock_db):
+        import bong_memory
+        doc = MagicMock()
+        doc.page_content = "I love dubstep"
+        doc.id = "mem1"
+        doc.metadata = {"user_id": 111, "user_name": "Eve"}
+        mock_db.similarity_search_with_relevance_scores.return_value = [(doc, 0.9)]
+        mock_col = MagicMock()
+        mock_db._collection = mock_col
+        result = bong_memory.forget_memory.invoke({"query": "I love dubstep"})
+        assert "Forgotten" in result
+        mock_col.delete.assert_called_once_with(ids=["mem1"])
+
+    @patch.object(bong_memory_helpers, '_vector_db')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch('bong_memory._check_llm', return_value=None)
+    @patch('bong_tools.current_user_id', 111)
+    def test_forget_general_fact(self, mock_check, mock_clean, mock_db):
+        import bong_memory
+        doc = MagicMock()
+        doc.page_content = "the server has a meme channel"
+        doc.id = "mem2"
+        doc.metadata = {"user_name": ""}
+        mock_db.similarity_search_with_relevance_scores.return_value = [(doc, 0.85)]
+        mock_col = MagicMock()
+        mock_db._collection = mock_col
+        result = bong_memory.forget_memory.invoke({"query": "meme channel"})
+        assert "Forgotten" in result
+        mock_col.delete.assert_called_once_with(ids=["mem2"])
+
+    @patch.object(bong_memory_helpers, '_vector_db')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch('bong_memory._check_llm', return_value=None)
+    @patch('bong_tools.current_user_id', 111)
+    @patch('user_data.is_admin', return_value=False)
+    def test_forget_other_user_memory_denied(self, mock_admin, mock_check, mock_clean, mock_db):
+        import bong_memory
+        doc = MagicMock()
+        doc.page_content = "RadonFox likes pegging"
+        doc.id = "mem3"
+        doc.metadata = {"user_id": 222, "user_name": "RadonFox"}
+        mock_db.similarity_search_with_relevance_scores.return_value = [(doc, 0.9)]
+        mock_col = MagicMock()
+        mock_db._collection = mock_col
+        result = bong_memory.forget_memory.invoke({"query": "RadonFox likes pegging"})
+        assert "RadonFox" not in result
+        assert "no similar memory" in result.lower()
+        mock_col.delete.assert_not_called()
+
+    @patch.object(bong_memory_helpers, '_vector_db')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch('bong_memory._check_llm', return_value=None)
+    @patch('bong_tools.current_user_id', 273761843544064000)
+    @patch('user_data.is_admin', return_value=True)
+    def test_forget_other_user_memory_admin_allowed(self, mock_admin, mock_check, mock_clean, mock_db):
+        import bong_memory
+        doc = MagicMock()
+        doc.page_content = "RadonFox likes pegging"
+        doc.id = "mem4"
+        doc.metadata = {"user_id": 222, "user_name": "RadonFox"}
+        mock_db.similarity_search_with_relevance_scores.return_value = [(doc, 0.9)]
+        mock_col = MagicMock()
+        mock_db._collection = mock_col
+        result = bong_memory.forget_memory.invoke({"query": "RadonFox likes pegging"})
+        assert "Forgotten" in result
+        mock_col.delete.assert_called_once_with(ids=["mem4"])
+
+    @patch.object(bong_memory_helpers, '_vector_db')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch('bong_memory._check_llm', return_value=None)
+    @patch('bong_tools.current_user_id', 111)
+    def test_forget_no_match(self, mock_check, mock_clean, mock_db):
+        import bong_memory
+        doc = MagicMock()
+        doc.page_content = "something unrelated"
+        doc.id = "mem5"
+        doc.metadata = {"user_name": ""}
+        mock_db.similarity_search_with_relevance_scores.return_value = [(doc, 0.2)]
+        result = bong_memory.forget_memory.invoke({"query": "nonexistent thing"})
+        assert "No similar memory" in result
+
+
+# ========== retrieve_memories threshold ==========
+
+class TestRetrieveThresholds:
+    def test_general_fact_uses_user_threshold(self):
+        assert bong_memory_helpers.MIN_RELEVANCE_USER == 0.3
+        assert bong_memory_helpers.MIN_RELEVANCE_GENERAL == 0.5
+
+    @patch.object(bong_memory_helpers, '_vector_db')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch.object(bong_memory_helpers, '_batch_increment_access_counts')
+    def test_general_fact_below_general_threshold_excluded(self, mock_access, mock_clean, mock_db):
+        general_doc = MagicMock()
+        general_doc.page_content = "the server has a meme channel"
+        general_doc.id = "gen1"
+        general_doc.metadata = {"category": "fact", "importance": 3, "saved_at": datetime.now().timestamp(), "last_accessed": datetime.now().timestamp(), "access_count": 0, "user_name": ""}
+
+        user_doc = MagicMock()
+        user_doc.page_content = "Eve loves dubstep"
+        user_doc.id = "usr1"
+        user_doc.metadata = {"user_id": 111, "user_name": "Eve", "category": "preference", "importance": 4, "saved_at": datetime.now().timestamp(), "last_accessed": datetime.now().timestamp(), "access_count": 0}
+
+        mock_db.similarity_search_with_relevance_scores.side_effect = [
+            [(user_doc, 0.4)],
+            [(general_doc, 0.25), (user_doc, 0.4)],
+        ]
+        result = bong_memory_helpers.retrieve_memories("dubstep", user_id=111)
+        assert "Eve loves dubstep" in result
+        assert "meme channel" not in result
+
+    @patch.object(bong_memory_helpers, '_vector_db')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch.object(bong_memory_helpers, '_batch_increment_access_counts')
+    def test_general_fact_between_thresholds_included(self, mock_access, mock_clean, mock_db):
+        general_doc = MagicMock()
+        general_doc.page_content = "the server has a meme channel"
+        general_doc.id = "gen1"
+        general_doc.metadata = {"category": "fact", "importance": 3, "saved_at": datetime.now().timestamp(), "last_accessed": datetime.now().timestamp(), "access_count": 0, "user_name": ""}
+
+        mock_db.similarity_search_with_relevance_scores.return_value = [
+            (general_doc, 0.35),
+        ]
+        result = bong_memory_helpers.retrieve_memories("meme channel", user_id=111)
+        assert "meme channel" in result
+
+    @patch.object(bong_memory_helpers, '_vector_db')
+    @patch.object(bong_memory_helpers, '_clean_for_embedding', side_effect=lambda x: x)
+    @patch.object(bong_memory_helpers, '_batch_increment_access_counts')
+    def test_general_fact_above_user_threshold_included(self, mock_access, mock_clean, mock_db):
+        general_doc = MagicMock()
+        general_doc.page_content = "the server has a meme channel"
+        general_doc.id = "gen1"
+        general_doc.metadata = {"category": "fact", "importance": 3, "saved_at": datetime.now().timestamp(), "last_accessed": datetime.now().timestamp(), "access_count": 0, "user_name": ""}
+
+        mock_db.similarity_search_with_relevance_scores.return_value = [
+            (general_doc, 0.45),
+        ]
+        result = bong_memory_helpers.retrieve_memories("meme channel", user_id=111)
+        assert "meme channel" in result
